@@ -133,8 +133,7 @@ What each GSMs correspond to
 kable(rbind(data.frame(t(names(GSMList(GSE96578)))), data.frame(t(colnames(cd8_exp)[4:16]))))
 ```
 <br>
-**Comprehensive Information Matrix** -> Not including R_S418 Cycle2 treatment in the downstream analysis, because
-there is no replicate for this Cycle2 treatment RNA-seq experiment
+**Comprehensive Sample Information Matrix** -> Not including R_S418 Cycle2 treatment in the downstream analysis, because there is no biological replicate for this Cycle2 treatment RNA-seq experiment
 ```{r}
 ##################################################################################
 # What do each of these R_S4xx mean? i.e. what do each of these samples represent? ----
@@ -155,7 +154,7 @@ colnames(sample.info.matrix) <- c("Title","Treatment", "Patient Age", "Disease S
 
 # Decided not to include R_S418 Cycle2 treatment in the downstream analysis, because
 # there is no replicate for this Cycle2 treatment RNA-seq experiment
-sample.info.matrix <- sample.info.matrix[-4,]
+sample.info.matrix <- sample.info.matrix[-3,]
 cd8_exp <- dplyr::select(.data = cd8_exp, -R_S418)
 # head(sample.info.matrix)
 # head(cd8_exp)
@@ -761,7 +760,9 @@ In other words, the short fragments of RNA may not represent (i.e. map to) a gen
 The perks of RNA seq, though, is that it can be re-analyzed to give new information to uncover new things, as new genes & regulatory mechanisms are being discovered.
 <br>
 <br>
-Connecting to right human gene ensembl in order to get the HGNC symbols & Using getBM() function to retrieve the attributes - Ensembl gene ids and HGNC symbols - that matches the Ensembl gene ids in my dataset.
+Connecting to hg19 (GRCh37) human gene ensembl in order to get the HGNC symbols & Using getBM() function to retrieve the attributes - Ensembl gene ids and HGNC symbols - that matches the Ensembl gene ids in my dataset.
+<br>
+hg19 because the reads were aligned using hg19 reference genome (stated in the data processing protocol section).
 ```{r, message = FALSE, warning = FALSE}
 ensembl_gr37 <- useMart(biomart = "ensembl", dataset = "hsapiens_gene_ensembl",  host="grch37.ensembl.org")
 cd8_exp_filtered$id  <- gsub(pattern = "^gene:", replacement = "", x = cd8_exp_filtered$id, ignore.case = TRUE)
