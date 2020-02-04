@@ -1,0 +1,1007 @@
+---
+output:
+  html_notebook:
+    theme: paper
+    highlight: tango
+    number_sections: false
+    toc: true
+    toc_float: true
+    code_folding: hide
+    
+bibliography: library.bib
+---
+# RNA Seq Pre-Processing
+**Peripheral Blood CD8+ T cell in Pre-Anti-PD-1 Antibody vs Post-Anti-PD-1 Antibody Treated Melanoma Patients**
+
+By Dong Hoon Han
+BCB420 2020
+<br>
+*References are at the bottom of the html!
+
+## Introductory Questions {.tabset}
+
+### Why is the dataset of interest to you? {.tabset}
+
+I am interested in immunology, especially in T cells, which are driving the next generation immunotherapy treatments for cancer. 
+
+Immunocheckpoint inhibitors such as CTLA-4 and PD-1 inhibitors have been particularly successful, which inhibit the break of activated T cells. Unfortunately, although they have been successful, they did not achieve the same degree of success in every patients.
+
+The dataset from this study would allow me to probe into the transcriptomes of those break-inhibited activated CD8^+^ cytotoxic T cells vs normal activated CD8^+^ cytotoxic T cells. This would help me to hypothesize the different mechanisms of why those break-inhibited CD8^+^ Ts are more effective against cancer vs normal activated CD8^+^ Ts, and possibly why this therapy may not be responding against certain patients.
+
+Unfortunately, this dataset does not indicate whether the patient has survived or succumbed to the cancer, most likely due to privacy issues.
+
+
+### Control and Test conditions of the dataset? {.tabset}
+
+**Patients with stage IV melanoma** were enrolled for treatment with **pembrolizumab (pembro), anti-PD-1 antibody (2 mg kg^-1 by infusion every 3 weeks)**. After receiving their consents, peripheral blood was obtained before treatment and before each pembro infusion every weeks for 12 weeks. [@huang2017t]
+
+For RNA sequencing experiments, total CD8 T cells were sorted using a dump/dead-CD3^+^ CD8^+^ gating strategy, by BD Aria Sorter [@huang2017t]. Dump here means the exclusion channel which is used for staining everything you do not want.
+
+So the **controls** are the RNA sequencing of total CD8 T cells before pembro infusion. 
+
+The **tests** are the RNA sequencing of total CD8 T cells 3 weeks after each pembro infusion. 
+
+Overall the samples are divided into cycle 1, 2, 3, 4, as pembro was injected at Week 0, 3, 6, 9, and the blood was drawn before pembro injection at Week 0, 3, 6, 9, 12. 
+
+**Pretreatment samples** are week 0 pre-treatment peripheral blood CD8 T cells. These are the controls.
+
+**Cycle 1 samples** are week 3 peripheral blood CD8 T cells after the week 0 pembro injection.
+
+**Cycle 2 samples** are week 6 peripheral blood CD8 T cells after the week 0, 3 pembro injection.
+
+**Cycle 3 samples** are week 9 peripheral blood CD8 T cells after the week 0, 3, 6 pembro injection.
+
+**Cycle 4 samples** are week 12 peripheral blood CD8 T cells after the week 0, 3, 6, 9 pembro injection.
+
+**Cycle 2 samples were not included** in this analysis, because other samples all had 3 replicates (from 3 patients) whereas there was only one cycle 2 sample (from a single patient).
+
+### GSE Object {.tabset}
+
+Loading Libraries
+```{r message=FALSE, results='hide'}
+library(edgeR)
+library(GEOquery)
+library(dplyr)
+library(knitr)
+library(biomaRt)
+```
+
+
+Loading in the GSE by using GEOquery package & Extracting Relevant Information
+```{r chunk, collapse=FALSE, message = FALSE, echo = TRUE, results = 'asis'}
+# Loading in the Data
+GSE96578 <- getGEO("GSE96578",GSEMatrix=FALSE)
+
+
+# Roughly what kind of experiment was this.
+kable(data.frame(Overall.Design = GSE96578@header$overall_design))
+kable(data.frame(Experiment.Summary = GSE96578@header$summary))
+
+current_gpl <- names(GPLList(GSE96578))[1]   # GPL23177
+current_gpl_info <- Meta(getGEO(current_gpl))
+
+kable(data.frame(GPL.Title = current_gpl_info$title, Submission = current_gpl_info$submission_date, 
+           Last.Update = current_gpl_info$last_update_date,
+           Organism = current_gpl_info$organism, Number.of.Series = length(current_gpl_info$series_id), 
+           Number.of.Samples = length(current_gpl_info$sample_id) ))
+
+```
+
+
+:::
+
+
+### Raw Counts Matrix {.tabset}
+
+Loading in the Raw Counts Matrix
+
+Two count matrixes: normalized & raw counts, using the raw counts matrix
+```{r}
+sfiles <- getGEOSuppFiles("GSE96578")
+fnames = rownames(sfiles)
+# [1] "/home/rstudio/GSE96578/GSE96578_AH_PBMC_RNAseq_normcounts.txt.gz"
+# [2] "/home/rstudio/GSE96578/GSE96578_AH_PBMC_RNAseq_rawcounts.txt.gz" 
+
+# Loading in the raw count matrix
+cd8_exp <-read.delim(fnames[2],header=TRUE, check.names = FALSE)
+```
+
+First 6 rows of Raw Counts Matrix
+```{r}
+head(cd8_exp)
+```
+<br>
+Dimension of the Raw Counts Matrix
+```{r}
+dim(cd8_exp)
+# [1] 28383    16
+# 28383 genes & 13 out of 16 columns are samples; other 3 are ID, gene coordinate, gene symbol.
+
+# colnames(cd8_exp)
+# [1] "id"             "geneCoordinate" "geneSymbol"     "R_S416"         "R_S417"         "R_S418"        
+# [7] "R_S419"         "R_S420"         "R_S426"         "R_S427"         "R_S428"         "R_S429"        
+# [13] "R_S430"         "R_S431"         "R_S432"         "R_S433"  
+
+# Removing objects for sanity sake
+
+rm( list = Filter( exists, c("sfiles", "fnames") ) )
+
+```
+<br>
+What each GSMs correspond to
+```{r}
+kable(rbind(data.frame(t(names(GSMList(GSE96578)))), data.frame(t(colnames(cd8_exp)[4:16]))))
+```
+<br>
+**Comprehensive Information Matrix** -> Not including R_S418 Cycle2 treatment in the downstream analysis, because
+there is no replicate for this Cycle2 treatment RNA-seq experiment
+```{r}
+##################################################################################
+# What do each of these R_S4xx mean? i.e. what do each of these samples represent? ----
+##################################################################################
+
+sample.info.matrix <- data.frame()
+
+# i under GSE96578@gsms is a GSE object, which can be probed using Meta() function
+# Use for loop to probe each of the 13 samples
+for(i in GSE96578@gsms){
+  sample.info.matrix <- rbind(sample.info.matrix,
+                       data.frame(Meta(i)$title, Meta(i)$characteristics_ch1[3],Meta(i)$characteristics_ch1[1],
+                                  Meta(i)$characteristics_ch1[5], Meta(i)$library_strategy, Meta(i)$instrument_model))
+}
+colnames(sample.info.matrix) <- c("Title","Treatment", "Patient Age", "Disease State",
+                                  "Data Type", "Instrument")
+# sample.info.matrix
+
+# Decided not to include R_S418 Cycle2 treatment in the downstream analysis, because
+# there is no replicate for this Cycle2 treatment RNA-seq experiment
+sample.info.matrix <- sample.info.matrix[-4,]
+cd8_exp <- dplyr::select(.data = cd8_exp, -R_S418)
+# head(sample.info.matrix)
+# head(cd8_exp)
+
+
+# Let's create a more descriptive label for each of the samples
+
+descriptive.label <- c("pt.A.PreTreat", "pt.A.Cycle1", "pt.A.Cycle3", "pt.A.Cycle4",
+                       "pt.B.PreTreat", "pt.B.Cycle1", "pt.B.Cycle3", "pt.B.Cycle4",
+                       "pt.C.PreTreat", "pt.C.Cycle1", "pt.C.Cycle3", "pt.C.Cycle4")
+
+sample.info.matrix %>% mutate(Label = descriptive.label) -> sample.info.matrix
+
+sample.info.matrix %>% 
+  mutate(Patient = stringr::str_match(string = sample.info.matrix$Label,
+                                      pattern = "(?<=\\.)(.*)(?=\\.)")[,1]) %>%
+  mutate(Treatment = stringr::str_match(string = sample.info.matrix$Label,
+                                        pattern = "(?<=pt\\.[A-z]\\.)(.*)")[,1]) -> sample.info.matrix
+
+kable(sample.info.matrix)
+
+# Lets change the Count Matrix Sample names to the more descriptive names as well
+
+colnames(cd8_exp)[4:15] <- sample.info.matrix$Label
+
+# Removing descriptive.label for sanity sake
+
+rm( list = Filter( exists, c("descriptive.label", "i") ) )
+```
+
+
+
+
+
+### Contact Information and Data Processing & Extraction Protocol{.tabset}
+
+Contact Information
+```{r}
+kable(data.frame(head(Meta(GSE96578))))
+```
+Data Processing Protocol for all Samples from Fastq to Raw Counts
+```{r}
+j = 0
+Data_Processing <- list()
+Extraction_Protocol <- list()
+for(i in GSE96578@gsms){
+  j = j + 1
+  Data_Processing[[j]] <- Meta(i)$data_processing
+  Extraction_Protocol[[j]] <- Meta(i)$extract_protocol_ch1
+}
+unlist(unique(Data_Processing))
+
+# [[1]]
+# [1] "The fastqs were aligned using STAR 2.5.2a and hg19"                                                             
+# [2] "The aligned files were processed using PORT gene-based normalization 
+# ( https://github.com/itmat/Normalization )"
+# [3] "The differential gene expression was done with limma"                                                           
+# [4] "Genome_build: hg19"                                                                                             
+# [5] "Supplementary_files_format_and_content: Raw counts and normalized counts"     
+```
+
+Extraction Protocol for all Samples
+```{r}
+unlist(unique(Extraction_Protocol))
+
+# [[1]]
+# [1] "RNA was isolated using the Qiagen RNeasy micro kit (#74034) according to the manufacturer's 
+# protocol"                                                                   
+# [2] "RNA-seq libraries were prepared using the SMARTer Stranded Total RNA-Seq Kit for Pico Input Mammalian 
+# from Clonetech according to the manufacturer's protocol (#635007)"
+# [3] "The libraries were sequenced on an Illumina NextSeq machine using a 300 cycle high output 
+# flow cell (#15057929)"   
+
+# Removing j, i, Data_Processing, & Extraction_Protocol
+
+rm(i, j, Data_Processing, Extraction_Protocol)
+
+
+```
+##
+
+
+
+
+
+## Outliers, Replicates & Duplicates {.tabset}
+
+### Gene Duplicates {.tabset}
+
+Duplicates were handled the following way.
+
+Dimension of the Raw Count Matrix
+```{r}
+
+######################################################
+# Now Cleaning the Data ----
+######################################################
+
+
+# How many unique genes do we have?
+# Are there any non-genes in our dataset? If so, what are they?
+# Can we exclude them?
+
+dim(cd8_exp)
+# [1] 28383    15
+# 28383 genes & 12 out of 15 columns are samples; other 3 are ID, gene coordinate, gene symbol.
+# there 4 triplet replicates so 12 samples in total: Pre-treatment, Cycle 1, Cycle 3, Cycle 4 
+```
+There are 28383 features (i.e. genes/nongenes) & 12 out of 15 columns are
+samples; other 3 are ID, gene coordinate, gene symbol.
+<br>
+This raw count matrix consists of 4 triplet replicates so 12 samples in 
+total: Pre-treatment, Cycle 1, Cycle 3, Cycle 4 
+<br>
+<br>
+I've created the table of row counts for each of the "gene" name, using
+code learnt from the class. This is to probe the gene duplicates in my
+data.
+```{r}
+# head(cd8_exp)
+
+# Create a table of row counts for each factor (i.e. gene name or maybe sth else) in the geneSymbol column 
+summarized_gene_counts <- sort(table(cd8_exp$geneSymbol),decreasing = TRUE)
+
+# Lets only include those factors with more than 1 count
+kable(t(summarized_gene_counts[which(summarized_gene_counts>1)[1:10]]))
+# Y_RNA       U3      snoU13   Metazoa_SRP   SNORA40     7SK         U1          U6     SNORA31     SNORA70 
+# 174         19      9        8             7           6           4           4      3           3 
+```
+Why do certain factors like Y_RNA appear more than once in the gene row? 
+Let's check it out using head() and logical subsetting to select those rows with "Y_RNA".
+```{r}
+head(cd8_exp[cd8_exp$geneSymbol == "Y_RNA",])[,1:6]
+```
+
+Some factors like Y_RNA appears multiple times because there are different Y_RNA at different chromosomal regions.
+Y RNAs are small non-coding RNAs, SNOR are small nucleolar RNA, and Us are small nuclear RNA.
+<br>
+<br>
+From the notes I've took during lecture and my opinion, there is no need to filter them out, since they are unique features of the cells that
+map to different chromosomal regions.
+<br>
+<br>
+But we do need to filter out weakly expressed and noninformative (non-aligned) features, all of which can be done in edgeR.
+
+### Filtering out Outliers (How many were filtered out){.tabset}
+
+Genes with very low count across all libraries provide very little evidence for differential expression. Moreover,
+the discreteness of these low counts interferes with some of the statistical approximations used in edgeR
+package [@Robinson:2010:Bioinformatics:19910308]. Thus, these genes should be considered as outliers and
+need to be filtered out before downstream analysis.
+<br>
+<br>
+A gene also should be filtered with count-per-million (CPM) rather than raw counts, as raw counts do not account for
+differences in library sizes between samples[@Robinson:2010:Bioinformatics:19910308].
+<br>
+<br>
+Before getting started, let's figure out the definition of counts per million, or CPM.
+<br>
+<br>
+$CPM_{i} = \frac{X_{i}}{N}\cdot 10^{6}$
+<br>
+<br>
+Here $X_{i}$ is the count for certain gene and $\frac{N}{10^{6}}$ is the number of fragments you sequenced in the library per million.
+By processing the raw count to counts per million, the library size differences between samples can be accounted for.
+<br>
+<br>
+Raw count matrix is turned into counts per million matrix, in order to filter out the genes that have abnormally low counts.
+```{r, warning = FALSE}
+
+# Before translating raw counts into counts per million by using cpm() in edgeR,
+# What is counts per million?
+# https://haroldpimentel.wordpress.com/2014/05/08/what-the-fpkm-a-review-rna-seq-expression-units/
+
+# First refer the each read, either single-end or pair-ended reads, to represent a fragment that was sequenced.
+# Counts usually refer to the number of reads that align to a particular feature.
+# And this depends on two things: (1) the amount of fragments you sequenced (this is related to relative abundance)
+# (2) the length of the feature, or more appropriately, the effective length, the number of possible start sites a 
+# feature could have generated a fragment of particular length
+
+# Counts per million are counts scaled by the number of fragments you sequenced (N) times one million
+
+# Translating counts into counts per million using edgeR package function cpm
+# ?cpm
+cpms <- cpm(cd8_exp[,4:15])
+
+rownames(cpms) <- cd8_exp[,1]
+head(cpms)[,1:6]
+```
+
+<br>
+EdgeR recommends us to remove features without at least 1 read per million 
+in n of the samples, where n is the size of the smallest group of replicates
+There are 3 samples of each cycle (i.e. pre-treatment, cycle1, cycle 3, cycle4)
+if I do not include Cycle2 treatment so n = 3
+<br>
+<br>
+Using the above principle, the filtered gene matrix is generated, and the number of 
+features between before and after the filtering is shown
+```{r, warning = FALSE}
+# Filtering out low counts
+keep <- rowSums(cpms >1) >=3 # So n is 3 here, and all features must have 1 read per million in 3 of the samples
+
+cd8_exp_filtered <- cd8_exp[keep, ]
+
+# dim(cd8_exp)            # [1] 28383    15
+# dim(cd8_exp_filtered)   # [1] 17118    15
+before_after <- t(data.frame(Before = dim(cd8_exp), After = dim(cd8_exp_filtered)))
+colnames(before_after) <- c("Number of Features", "Number of Columns")
+kable(before_after)
+rm(before_after)
+```
+**How many outliers were removed?**
+<br>
+11256 genes that had very low counts, i.e, outliers, across the samples were filtered out.
+
+```{r}
+dim(cd8_exp) - dim(cd8_exp_filtered)
+
+```
+
+<br>
+Interestingly, many duplicate genes were also filtered out during the process
+```{r}
+# Did this solve the duplicate issue?
+
+summarized_gene_counts_filtered <- sort(table(cd8_exp_filtered$geneSymbol),decreasing = TRUE)
+```
+Before
+```{r}
+kable(t(summarized_gene_counts[which(summarized_gene_counts>1)[1:10]]))
+# Y_RNA       U3      snoU13   Metazoa_SRP   SNORA40     7SK        U1          U6     SNORA31     SNORA70 
+# 174         19      9        8             7           6          4           4      3           3 
+```
+After
+```{r}
+# After
+kable(t(summarized_gene_counts_filtered[which(summarized_gene_counts_filtered>1)[1:10]]))
+# Y_RNA     U3   SNORA40   7SK    CRIP1   CRYBG3   GOLGA7B   IDS   KBTBD4   KIAA0391 
+# 29        4    3         2      2       2        2         2     2        2 
+
+
+
+# Removing Data for Sanity Sake
+rm( list = Filter( exists, c("keep", "summarized_gene_counts_filtered", "cpms", "GSE96578", "summarized_gene_counts") ) )
+
+
+```
+
+
+### Normalization {.tabset}
+
+<br>
+Normalization is a necessary step to adjust the data so that we can focus more on biological variation than technical variation.
+
+
+Boxplot of the Filtered Matrix after CPM & log2 transformation (Pre-Normalization)
+```{r, Warning = FALSE}
+##################################################################################
+# Normalization - First step in Analysis ----
+##################################################################################
+
+# We want to look a biological variation rather than technical variation
+# Our sampling of data will form certain distribution like normal, bimodal, poisson, power log (all are well characterized)
+# or some other distributions
+# head(cd8_exp_filtered[,4:15])
+# View(cd8_data2plot)
+
+# Boxplot of each of the samples
+cd8_data2plot <- log2(cpm(cd8_exp_filtered[,4:15]))
+boxplot(cd8_data2plot, xlab = "Samples", ylab = "log2 CPM", 
+        las = 2, cex = 0.5, cex.lab = 0.5,
+        cex.axis = 0.5, main = "CD8+ T PBMC RNASeq Samples")
+
+# Adding a median line at each boxplot (median of the medians of each sample)
+abline(h = median(apply(cd8_data2plot, 2, median)), col = "green", lwd = 0.6, lty = "dashed")
+
+# The data I chose has outliers in the highly expressed genes whereas no outliers in the lowly expressed genes
+
+############## Why does my data not have negative expression values? ################
+
+# Log2 transformation of the cpm of the new filtered expression data
+
+cd8_exp_filtered_cpm_log2 <- log2(cpm(cd8_exp_filtered[,4:15]))
+```
+
+Density plot of the Filtered Matrix after CPM & log2 transformation
+```{r}
+
+# Distribution of our Data - Density Plot
+
+counts_density <- apply(cd8_exp_filtered_cpm_log2, MARGIN = 2, density)
+#calculate the limits across all the samples
+xlim <- 0; ylim <- 0
+for (i in 1:length(counts_density)) {
+  xlim <- range(c(xlim, counts_density[[i]]$x)); 
+  ylim <- range(c(ylim, counts_density[[i]]$y))
+}
+cols <- rainbow(length(counts_density))
+ltys <- rep(1, length(counts_density))
+#plot the first density plot to initialize the plot
+plot(counts_density[[1]], xlim=xlim, ylim=ylim, type="n", 
+     ylab="Smoothing density of log2-CPM", main="", cex.lab = 0.85)
+#plot each line
+for (i in 1:length(counts_density)) lines(counts_density[[i]], col=cols[i], lty=ltys[i])
+#create legend
+legend("topright", colnames(cd8_data2plot),  
+       col=cols, lty=ltys, cex=0.75, 
+       border ="blue",  text.col = "green4", 
+       merge = TRUE, bg = "gray90")
+
+# Removing Data for sanity sake
+rm(i, xlim, ylim, cols, ltys, counts_density)
+
+```
+<br>
+M vs A Plot of Cycle 1 vs Pre-Treatment CD8^+^ T RNA-seq
+```{r, Message = FALSE,results='hide'}
+
+# Implementing Trimmed Mean of M-Values Normalization (TMM)
+
+# implemented in edgeR package, based on hypothesis that most genes are not differentially expressed, sample-based
+
+# colnames(cd8_exp_filtered_cpm_log2)
+
+# M vs A plot
+# Originally used in microarray with two dye (red vs green) to assay the technical variability between the intensities
+# of two dyes
+
+# M - ratio, is the ratio of Week 3 of Anti-PD-1 Therapy vs Pre-Treatment, and A is the average of the two samples
+limma::plotMA(log2(cd8_exp_filtered_cpm_log2[,c(2,1)]), ylab="M - ratio log expression", 
+       main="Week 3 of Anti-PD-1 Therapy vs Pretreatment")
+```
+This plot is the basis of trimmed mean, which is the average after removing upper and lower percentage of the data points.
+And that percentages are 30% of the M values and 5% of the A values by default.
+<br>
+<br>
+Forming DGEList and calcNormFactors() to find a set of scaling factors for the library sizes that minimize the log fold
+changes between the samples for most genes. The default method for computing these scale factors uses a trimmed mean of M-
+values (TMM) between each pair of samples [@robinson2010scaling]
+<br>
+The product of the library size and the scaling factor is called effective library size, which replaces the original library
+size in all downstream analysis.
+```{r}
+# Trimmed Mean - is the average after removing the upper and lower percentage of the data points 
+# 30% of the M values and 5% of the A values by default
+
+# Application of TMM to the dataset 
+
+# Creating an edgeR container for RNAseq count data
+filtered_data_matrix <- as.matrix(cd8_exp_filtered[,4:15])
+rownames(filtered_data_matrix) <- cd8_exp_filtered$id
+
+# colnames(cd8_exp_filtered)[4:15]
+
+# Creating DGElist object from the filtered expression matrix
+# Here, group parameter is a vector/factor that gives the experimental group/condition for each sample/library
+# For this dataset, it is the different cycles of Anti-PD-1 antibody treatment to the melanoma patients
+TreatmentType <- sample.info.matrix$Treatment
+names(TreatmentType) <- sample.info.matrix$Title
+# TreatmentType
+  
+dGEList.for.TMM <-  DGEList(counts=filtered_data_matrix, group= TreatmentType)
+
+# Removing TreatmentType, filtered_data_matrix
+
+rm(TreatmentType, filtered_data_matrix)
+
+# edgeRUsersGuide()
+# The calcNormFactors function normalizes for RNA composition by finding a set of scaling
+# factors for the library sizes that minimize the log-fold changes between the samples for most
+# genes. The default method for computing these scale factors uses a trimmed mean of M-
+#   values (TMM) between each pair of samples [30]
+
+# Robinson, M.D. and Oshlack, A. (2010). A scaling normalization method for
+# differential expression analysis of RNA-seq data. Genome Biology 11, R25.
+
+# We call the product of the original library
+# size and the scaling factor the effective library size. The effective library size replaces the
+# original library size in all downsteam analyses.
+
+dGEList.for.TMM <-  calcNormFactors(dGEList.for.TMM)
+# str(dGEList.for.TMM)
+```
+
+**Plot of the Normalized Data before & after TMM normalization**
+<br>
+<br>
+**Side to Side Boxplot of Before & After TMM**
+<br>
+<br>
+There is a great difference before and after the normalization. The interquartile range (between Q1 and Q3) has narrowed down a lot.
+There are also more outliers in the highly expressed genes in all samples. 
+```{r, Warning = FALSE}
+# Getting the normalized data
+normalized_counts <- cpm(dGEList.for.TMM, log = TRUE) # When log is TRUE, it returns log2 values.
+# Side to Side Boxplot Before and After TMM
+
+par(mfrow=c(1,2))
+
+cd8_data2plot <- log2(cpm(cd8_exp_filtered[,4:15]))
+boxplot(cd8_data2plot, xlab = "Samples", ylab = "log2 CPM", 
+        las = 2, cex = 0.5, cex.lab = 0.5,
+        cex.axis = 0.5, main = "CD8+ T Samples")
+
+# Adding a median line at each boxplot (median of the medians of each sample)
+abline(h = median(apply(cd8_data2plot, 2, median)), col = "green", lwd = 0.6, lty = "dashed")
+
+d_data2plot <- normalized_counts
+boxplot(d_data2plot, xlab = "Samples", ylab = "log2 CPM", 
+        las = 2, cex = 0.5, cex.lab = 0.5,
+        cex.axis = 0.5, main = "CD8+ T Samples after TMM")
+
+# Adding a median line at each boxplot (median of the medians of each sample)
+abline(h = median(apply(d_data2plot, 2, median)), col = "green", lwd = 0.6, lty = "dashed")
+
+par(mfrow=c(1,1))
+
+# Removing Data
+rm( d_data2plot)
+```
+
+**Side to Side Density Plot - Before (left) & After (right) Normalization**
+<br>
+<br>
+The two density plots also show great differences. The log2-cpm transformed gene counts in 5 range have decreased a lot 
+compared to the original pre-normalization sample.
+```{r}
+par(mfrow = c(1,2))
+# Distribution of our Data - Density Plot
+
+counts_density <- apply(cd8_exp_filtered_cpm_log2, MARGIN = 2, density)
+#calculate the limits across all the samples
+xlim <- 0; ylim <- 0
+for (i in 1:length(counts_density)) {
+  xlim <- range(c(xlim, counts_density[[i]]$x)); 
+  ylim <- range(c(ylim, counts_density[[i]]$y))
+}
+cols <- rainbow(length(counts_density))
+ltys <- rep(1, length(counts_density))
+#plot the first density plot to initialize the plot
+plot(counts_density[[1]], xlim=xlim, ylim=ylim, type="n", 
+     ylab="Smoothing density of log2-CPM", main="", cex.lab = 0.85)
+#plot each line
+for (i in 1:length(counts_density)) lines(counts_density[[i]], col=cols[i], lty=ltys[i])
+#create legend
+legend("topright", colnames(cd8_data2plot),  
+       col=cols, lty=ltys, cex=0.75, 
+       border ="blue",  text.col = "green4", 
+       merge = TRUE, bg = "gray90")
+
+# Removing Data for sanity sake
+rm(i, xlim, ylim, cols, ltys, counts_density)
+
+# After Normalization ----
+
+
+
+# Getting distribution graph for normalized data
+counts_density <- apply(normalized_counts, MARGIN = 2, density)
+#calculate the limits across all the samples
+xlim <- 0; ylim <- 0
+for (i in 1:length(counts_density)) {
+  xlim <- range(c(xlim, counts_density[[i]]$x)); 
+  ylim <- range(c(ylim, counts_density[[i]]$y))
+}
+cols <- rainbow(length(counts_density))
+ltys <- rep(1, length(counts_density))
+#plot the first density plot to initialize the plot
+plot(counts_density[[1]], xlim=xlim, ylim=ylim, type="n", 
+     ylab="Smoothing density of log2-CPM", main="", cex.lab = 0.85)
+#plot each line
+for (i in 1:length(counts_density)) lines(counts_density[[i]], col=cols[i], lty=ltys[i])
+#create legend
+legend("topright", sample.info.matrix$Label,  
+       col=cols, lty=ltys, cex=0.75, 
+       border ="blue",  text.col = "green4", 
+       merge = TRUE, bg = "gray90")
+
+# Removing Data for Sanity Sake
+rm(counts_density, cols, ltys, xlim, ylim, i, cd8_data2plot)
+par(mfrow = c(1,1))
+```
+**Plot of Mean - Variance after Normalization**
+<br>
+<br>
+This plot shows us how the different dispersion values we have calculated influence the data.
+<br>
+The raw variances of the counts are the gray dots
+<br>
+Variance = mean (assumption of poisson distribution) is the solid black line.
+<br>
+Variances estimated using the tagwise dispersions are blue dots.
+<br>
+Variances estimated using the common dispersions are the solid blue lines.
+<br>
+<br>
+Binned Common Display Variance = Red X
+<br>
+Common Dispersion for each bin of genes and show the variances computed from those binned common dispersions and the mean expression 
+level of the respective bin of genes.
+<br>
+Blue line shows the mean-variance relationship for a Negative Binomial model with common dispersion.
+```{r}
+model_design <- model.matrix(~sample.info.matrix$Patient + sample.info.matrix$Treatment  + 0)
+dGEList.for.TMM <- estimateDisp(dGEList.for.TMM, model_design)
+
+plotMeanVar(dGEList.for.TMM, show.raw.vars = TRUE, show.tagwise.vars=TRUE, 
+            show.ave.raw.vars = TRUE,  
+            NBline=TRUE,
+            show.binned.common.disp.vars = TRUE)
+
+# Removing model_design for Sanity Sake
+rm(model_design)
+```
+In a RNA seq experiment, we map the sequencing reads to the reference genome and count how many reads fall within a given gene (or exon).
+<br>
+In other words, the inputs for statistical analysis are discrete non-negative integers or counts for each gene in each sample.
+<br>
+<br>
+The total number of reads for each sample tends to be in millions while the counts per gene vary considerably but tend to be in tens,
+hundreds, or thousands. 
+<br>
+<br>
+Therefore, the chance of a given read to be mapped to any specific gene is rather small. 
+<br>
+Poisson process is when discrete events are sampled out of a large pool with low probability, and earlier iterations of RNA-seq analysis
+modeled sequencing data as a Poisson distribution.
+<br>
+One problem with Poisson distribution is that variability of read counts in sequencing experiments is greater than the variance 
+Poisson distribution allows, which assumes its variance is equal to the mean.
+<br>
+<br>
+The negative binomial (NB) distribution, which is used instead, can be described as Poisson-Gamma mixture distribution, which allows
+the extra variance by including the rate parameter gamma.
+<br><br>
+All of the above interpretation was taken from the following source, which helped me understand how statisticians modeled this reads to
+counts event [@lipp_2016]!
+
+### Handling Biological Replicates {.tabset}
+
+Biological replicates are the same experiments performed on multiple samples that are of same type of cells/tissues. 
+<br>
+This is different from technical replicates, which are same experiments performed on single sample multiple times.
+<br>
+For my dataset, the 4 groups of biological replicates are Pre-treatment, Cycle 1, Cycle 3, Cycle 4 samples. Each group has 3 biological replicates, from 3 different patients
+<br>
+<br>
+We can visualize the clustering of the replicates by Multidimensional Scaling graph.
+
+```{r}
+# Multidimensional Scaling Plots between Samples
+plotMDS(dGEList.for.TMM, labels=sample.info.matrix$Label,
+        col = c("darkgreen","blue","cyan", "green")[factor(sample.info.matrix$Patient)])
+```
+The same patient samples clustered closely together along x-axis. Within the same patient samples, there were variations of the samples along the y-axis, depending on the treatment.
+Interesting, while treatment cycle 1 samples were the outliers for patient A & B, treatment cycle 3 sample was the outlier for patient C.
+
+<br><br>
+**Plot of Mean Variance**
+<br><br>
+Same plot in the Normalization Tab
+```{r}
+model_design <- model.matrix(~sample.info.matrix$Patient + sample.info.matrix$Treatment  + 0)
+dGEList.for.TMM <- estimateDisp(dGEList.for.TMM, model_design)
+
+plotMeanVar(dGEList.for.TMM, show.raw.vars = TRUE, show.tagwise.vars=TRUE, 
+            show.ave.raw.vars = TRUE,  
+            NBline=TRUE,
+            show.binned.common.disp.vars = TRUE)
+
+# Removing model_design for Sanity Sake
+rm(model_design)
+```
+
+According to, edgeR, dispersion squared is biological coefficient of variation (BCV) so dispersion is a measure of how 
+much variation there is in the samples.
+The raw variances of the counts are the gray dots
+<br><br>
+Variance = mean (assumption of poisson distribution) is the solid black line.
+<br>
+Variances estimated using the tagwise dispersions are blue dots.
+<br>
+Variances estimated using the common dispersions are the solid blue lines.
+<br><br>
+My samples seem to fit well with the NB distribution in terms of mean-variance.
+<br><br>
+**I have decided to keep these biological replicates of Cycle 1, 3, 4, and Pre-treatment for my downstream analysis.**
+
+
+## 
+
+## Expression Values {.tabset}
+
+### Identifer Mapping
+
+The data just doesn't contain the identifers that we're interested in - i.e genes. Technology itself works on a different level and tracks different information so often
+aren't working gene level data - like for RNA-seq, it deals with read counts of short fragments of RNA that don't necessarily map to an individual gene.
+
+In other words, the short fragments of RNA may not represent (i.e. map to) a gene.
+<br>
+<br>
+The perks of RNA seq, though, is that it can be re-analyzed to give new information to uncover new things, as new genes & regulatory mechanisms are being discovered.
+<br>
+<br>
+Connecting to right human gene ensembl in order to get the HGNC symbols & Using getBM() function to retrieve the attributes - Ensembl gene ids and HGNC symbols - that matches the Ensembl gene ids in my dataset.
+```{r, message = FALSE, warning = FALSE}
+ensembl_gr37 <- useMart(biomart = "ensembl", dataset = "hsapiens_gene_ensembl",  host="grch37.ensembl.org")
+cd8_exp_filtered$id  <- gsub(pattern = "^gene:", replacement = "", x = cd8_exp_filtered$id, ignore.case = TRUE)
+
+# head(cd8_exp_filtered)
+
+# Now Doing the Identifier Mapping
+
+conversion_stash <- "cd8_id_conversion.rds"
+if(file.exists(conversion_stash)){
+  cd8_id_conversion <- readRDS(conversion_stash)
+} else {
+  cd8_id_conversion <- getBM(attributes = c("ensembl_gene_id","hgnc_symbol"),
+                               filters = c("ensembl_gene_id"),
+                               values = factor(cd8_exp_filtered$id),
+                               mart = ensembl_gr37)
+  saveRDS(cd8_id_conversion, conversion_stash)
+}
+```
+
+Probing my new retrieved mapping with head()
+```{r}
+head(cd8_id_conversion)
+
+```
+
+The difference between the number of mappings that are not missing values or empty strings and the number of rows in the normalized set -
+This doesn't necessarily mean we are missing only that many
+<br><br>
+
+```{r}
+# Getting the difference between the number of mappings and the number of rows in the normalized set
+# BUT this doesn't necessarily mean we are missing only that many
+
+nrow(normalized_counts) - (sum(!is.na(cd8_id_conversion$hgnc_symbol)) - sum(nchar(cd8_id_conversion$hgnc_symbol) == 0))
+```
+Merging the normalized_counts matrix to the newly mapped idenfiers 
+& head() to get the merged normalized_counts_annot matrix its first look
+```{r}
+# Merging the new identifers
+
+# head(rownames(normalized_counts))
+rownames(normalized_counts) <- gsub(pattern = "^gene:", replacement = "", x = rownames(normalized_counts),
+                                    ignore.case = TRUE)
+# head(rownames(normalized_counts))
+
+# all.y = TRUE; right outer join where the normalized_counts is preserved
+# by.x = 1 refers to the ensembl_gene_id column of cd8_id_conversion, and by.y = 0 refers to the row names of the
+# normalized_counts
+
+normalized_counts_annot <- merge(x = cd8_id_conversion, y = normalized_counts,by.x = 1, by.y = 0, all.y=TRUE)
+
+
+# Two more additional columns: ensembl_gene_id & hgnc_symbol
+
+head(normalized_counts_annot)[,1:6]
+   
+
+rm( current_gpl_info)
+```
+
+
+
+
+### Expression values having different ensembl gene ids but map to same HUGO symbols OR not mapping to current HUGO symbols{.tabset}
+
+To determine the expression values that have different ensembl gene ids but map to same HUGO symbols, 
+I needed to check whether there were rows with same HUGO symbols but with different ensembl gene ids in 
+the merged normalized_count_annot matrix.
+<br><br>
+To check for same HUGO symbols, I first checked the difference between the total length of the 
+HUGO symbols vs length of the unique HUGO symbols
+<br><br>
+Total Length of HUGO Symbols in the merged dataset
+```{r}
+length(normalized_counts_annot$hgnc_symbol)
+# [1] 17120
+```
+Length of Unique HUGO Symbols in the merged dataset
+```{r}
+length(unique(normalized_counts_annot$hgnc_symbol))
+# [1] 14411
+```
+Difference between the total length of the HUGO symbols vs length of the unique HUGO symbols
+<br>
+i.e. The number of duplicated HUGO symbols
+```{r}
+length(normalized_counts_annot$hgnc_symbol) - length(unique(normalized_counts_annot$hgnc_symbol)) 
+# [1] 2709
+```
+I then took a glance at the duplicated HUGO symbols data.frame with head().
+```{r}
+duplicated.hugo <- normalized_counts_annot[duplicated(normalized_counts_annot$hgnc_symbol),c(1,2)]
+head(duplicated.hugo)
+```
+<br><br>
+Seems like most if not all duplicated HUGO symbols are either empty string or missing values!
+<br><br>
+What I've realized though is that when these unmapped ensembl gene ids are also mapped to
+"external_gene_name" attribute, they all got those names that were searchable on the 
+https://grch37.ensembl.org website. And few of them were even searchable on the HUGO
+https://www.genenames.org/ website, while most of them were not searchable on HUGO website.
+<br><br>
+Unmapped Ensembl Gene Ids mapped to External Gene Name attribute
+
+```{r,  message = FALSE, warning = FALSE}
+duplicated.hugo.matrix <- getBM(attributes = c('ensembl_gene_id', 'external_gene_name', "hgnc_symbol"),
+                        filters = "ensembl_gene_id",
+                        values = duplicated.hugo$ensembl_gene_id,
+                        mart = ensembl_gr37)
+
+head(duplicated.hugo.matrix)
+
+```
+
+<br><br>
+Let's check how many empty strings and missing values compose this ensembl gene ids without
+hgnc symbol to see if there are any duplicates that have hgnc symbol representing more than 1
+ensembl gene id.
+<br><br>
+The number of empty strings for duplicated hgnc_symbol
+```{r}
+
+number.of.duplication <- ncol(duplicated.hugo.matrix)
+
+# The number of empty strings for duplicated hgnc_symbol
+(number.of.empty.strings.in.duplicated.hgnc.matrix <- sum(nchar(duplicated.hugo.matrix$hgnc_symbol) == 0, na.rm = TRUE)) 
+    
+```
+<br><br>
+The number of missing values for duplicated hgnc_symbol
+```{r}
+# The number of missing values for duplicated hgnc_symbol
+(number.of.missing.values.in.duplicated.hgnc.matrix <- sum(is.na(duplicated.hugo.matrix$hgnc_symbol))) 
+#
+
+```
+
+When the number of missing value and the number of emtpy strings are summed and compared against the
+number of duplicated HGNC symbol, the logical conditional outputs FALSE.
+```{r}
+# Lets check whether the two above numbers add up to the number of duplicated HGNC symbols
+
+number.of.duplication == number.of.empty.strings.in.duplicated.hgnc.matrix + number.of.missing.values.in.duplicated.hgnc.matrix # [1] FALSE
+```
+There is 1 HGNC symbol duplicate that is neither an empty string nor a missing value.
+```{r}
+sum(!(nchar(duplicated.hugo.matrix$hgnc_symbol) == 0) & !(is.na(duplicated.hugo.matrix$hgnc_symbol)))    
+```
+
+
+
+And it is this!
+```{r}
+the.index <- which(!(nchar(duplicated.hugo$hgnc_symbol) == 0) & !(is.na(duplicated.hugo$hgnc_symbol)))   # [1] 2115
+
+duplicated.hugo.matrix[ the.index, ]
+#      ensembl_gene_id external_gene_name hgnc_symbol
+# 2115 ENSG00000266036            MIR3615     MIR3615
+```
+
+And the different ensembl IDs that correspond to the symbol "MIR3615"
+```{r}
+normalized_counts_annot[which(normalized_counts_annot$hgnc_symbol == "MIR3615"), 1:6]
+
+#       ensembl_gene_id hgnc_symbol pt.A.PreTreat pt.A.Cycle1 pt.A.Cycle3 pt.A.Cycle4
+# 16356 ENSG00000264624     MIR3615      1.585288    1.585288    1.585288    1.585288
+# 16416 ENSG00000266036     MIR3615      1.585288    1.585288    1.585288    2.205500
+
+```
+Searching the two ensembl gene id at the http://grch37.ensembl.org/ tells me that one is forward strand and the another is reverse strand.
+<br><br>
+I've decided to keep both of the MIR3614 rows because the expression level was different between the forward and reverse strand, interestingly. And based on my understanding from molecular biology classes,
+the RNA polymerase does not know whether the genes should be transcribed in either one of the strands (i.e. in either two directions), although RNA polymerase does prematurely halt when it is on the non-coding strand. 
+<br><br>
+Now for the problem of whether to keep or filter the other 2708 expression values that do not map to
+HGNC symbol, I was introduced to HGNChelper package to check whether the external gene names have 
+better up-to-date recommended names.
+<br>
+<br>
+And out of those expression values, only 82 of them had recommended names.
+```{r, message = FALSE, warning = FALSE}
+library(HGNChelper)
+checked.Gene.Symbols <- checkGeneSymbols(duplicated.hugo.matrix$external_gene_name)
+
+head(checked.Gene.Symbols)
+sum(!is.na(checked.Gene.Symbols$Suggested.Symbol))
+
+```
+
+```{r, Warning = FALSE, message = FALSE}
+# Final Dataset
+
+conversion_stash <- "cd8_id_conversion_final.rds"
+if(file.exists(conversion_stash)){
+  cd8_id_conversion_final <- readRDS(conversion_stash)
+} else {
+  cd8_id_conversion_final <- getBM(attributes = c("ensembl_gene_id","hgnc_symbol", "external_gene_name"),
+                               filters = c("ensembl_gene_id"),
+                               values = factor(cd8_exp_filtered$id),
+                               mart = ensembl_gr37)
+  saveRDS(cd8_id_conversion_final, conversion_stash)
+}
+
+normalized_counts_annot_final <- merge(x = cd8_id_conversion_final, y = normalized_counts,by.x = 1, by.y = 0, all.y=TRUE)
+checked.Gene.Symbols <- checkGeneSymbols(normalized_counts_annot_final$external_gene_name)
+normalized_counts_annot_final <- cbind(normalized_counts_annot_final, checked.Gene.Symbols[,c(2,3)])
+```
+<br><br>
+I've decided to keep all the 2708 expression values, as they are a sizable chunk of my data and are those genes that may not have their functions assigned but are expressed up to certain degree in my samples without getting discarded in the filter step.
+<br><br>
+I've decided to keep an extra column for external_gene_name attribute for all my expression value rows, and also include the recommended names in the suggested.symbol column, based on external_gene_name column.
+<br><br>
+Unfortunately, this means that the final result of my dataset would have many genes that are missing the HUGO gene symbol. And one of my genes MIR3614 has non-unique HUGO gene symbol.
+<br><br>
+Here is a head view of my final curated data.
+
+```{r}
+head(normalized_counts_annot_final)
+saveRDS(normalized_counts_annot_final, file = "Preprocessed_CD8_AntiPD1.RDS")
+```
+
+##
+
+## Final Coverage of my Dataset
+
+The Dimension of my Final Data Frame of Normalized Expressions
+```{r}
+dim(normalized_counts_annot_final)
+
+```
+
+The final coverage of my dataset has 17120 genes, with just one duplicate gene. And it has 4 different treatment groups, where each group have 3 biological replicates.
+<br><br>
+There are 2708 genes without mapped HUGO gene symbol, but have external names that allow one to identify the gene.
+
+
+---
+nocite: |
+  @huang2017t
+...
+
+### References
