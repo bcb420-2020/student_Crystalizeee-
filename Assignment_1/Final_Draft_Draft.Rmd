@@ -670,6 +670,8 @@ plotMeanVar(dGEList.for.TMM, show.raw.vars = TRUE, show.tagwise.vars=TRUE,
 # Removing model_design for Sanity Sake
 rm(model_design)
 ```
+My data models the negative binomial distribution, which mean it fits edgeR's assumption.
+<br><br>
 In a RNA seq experiment, we map the sequencing reads to the reference genome and count how many reads fall within a given gene (or exon).
 <br>
 In other words, the inputs for statistical analysis are discrete non-negative integers or counts for each gene in each sample.
@@ -953,6 +955,19 @@ sum(!is.na(checked.Gene.Symbols$Suggested.Symbol))
 
 ```
 
+I used View() to take a quick view on these 2708 genes. Out of these 2708 genes, there were 1475 genes that started with RP11 prefix. Through google search, I was able to find out that these genes referred to RP11 BAC clones, which is a code identifying an individual anonymous human donor to a the BAC clone library started at Roswell Park Cancer Institute by Dr.Pieter de Jong [@rp11_bac_clones]. These genes are the genetic dark matter.
+```{r}
+# Checking those that start with RP11
+length(grep(x = checked.Gene.Symbols$x, ignore.case = TRUE, pattern = "^Rp11", value = TRUE)) # [1] 1475
+```
+For those other genes that did not start with RP11, I was not able to find a specific pattern with their names. But since there are still 1233 (=2708 - 1475) of them, I do believe that this portion has the potential to be significant in the downstream differential gene analysis.
+<br><br>
+Here is a head() view of those unmapped genes that do not start with RP11.
+```{r}
+Not.start.with.RP11 <- grep(x = checked.Gene.Symbols$x, ignore.case = TRUE, pattern = "^Rp11", value = TRUE, invert = TRUE)
+head(Not.start.with.RP11)
+```
+
 ```{r, Warning = FALSE, message = FALSE}
 # Final Dataset
 
@@ -997,7 +1012,15 @@ dim(normalized_counts_annot_final)
 
 The final coverage of my dataset has 17120 genes, with just one duplicate gene. And it has 4 different treatment groups, where each group have 3 biological replicates.
 <br><br>
-There are 2708 genes without mapped HUGO gene symbol, but have external names that allow one to identify the gene.
+There are 2708 genes without mapped HUGO gene symbol, but have external names that allow one to identify the gene. And out of these 2708 genes, there are 82 genes that have better recommended names by the HGNChelper package.
+<br><br>
+If you were to go back to the raw counts section, there were originally 28383 genes & 13 instead of 12 samples that I have for the final matrix. The one cycle 2, was discarded because it had no biological replicates.
+<br><br>
+All deleted genes were due to abnormally low or no counts in the samples, according to edgeR recommendation of removing features without at least 1 read per million 
+in n of the samples, where n is the size of the smallest group of replicates.
+<br>
+There are 3 samples of each cycle (i.e. pre-treatment, cycle1, cycle 3, cycle4).
+
 
 
 ---
