@@ -1,0 +1,1913 @@
+---
+title: "Thresholded Overrepresentation Analysis (T-ORA)"
+output:
+  html_notebook:
+    code_folding: hide
+    highlight: tango
+    number_sections: no
+    theme: paper
+    toc: yes
+    toc_float: yes
+  html_document:
+    df_print: paged
+    toc: yes
+bibliography: library2.bib
+---
+**Peripheral Blood CD8+ T cell in Pre-Anti-PD-1 Antibody vs Post-Anti-PD-1 Antibody Treated Melanoma Patients**
+
+By Dong Hoon Han
+BCB420 2020
+<br>
+*References are at the bottom of the html!
+
+## Preface to the T-ORA {.tabset}
+
+### Analysis Aim & Experimental Info {.tabset}
+
+**Analysis Aim**
+<br><br>
+Immunocheckpoint inhibitors such as CTLA-4 and PD-1 inhibitors have been particularly successful, which inhibit the break of activated T cells. Unfortunately, although they have been successful, they did not achieve the same degree of success in every patients.
+
+The dataset from this study would allow me to probe into the transcriptomes of those break-inhibited activated CD8^+^ cytotoxic T cells vs normal activated CD8^+^ cytotoxic T cells. This would help me to hypothesize the different mechanisms of why those break-inhibited CD8^+^ Ts are more effective against cancer vs normal activated CD8^+^ Ts, and possibly why this therapy may not be responding against certain patients.
+
+```{r, message = FALSE, echo = TRUE, warning = FALSE, results = 'hide'}
+# Install packages that are not there
+packages = c("BiocManager", "tidyverse", "knitr", "biomaRt", 
+             "devtools", "reshape2", "kableExtra","circlize")
+
+bioconductor_packages = c("edgeR", "GEOquery", "biomaRt", "gprofiler2", "ComplexHeatmap", "HGNChelper")
+
+packages <-setdiff(packages, rownames(installed.packages()))
+bioconductor_packages <- setdiff(bioconductor_packages, rownames(installed.packages()))
+
+
+for (package in packages){
+   install.packages(package)
+}
+
+for(package in bioconductor_packages){
+  BiocManager::install(package, update = FALSE)
+}
+
+if(!("annotables" %in% rownames(installed.packages()))){
+  devtools::install_github("stephenturner/annotables")
+}
+
+# Load in all the packages
+library(edgeR)          # Bioconductor
+library(GEOquery)       # Bioconductor
+library(tidyverse)
+library(knitr)
+library(biomaRt)        # Bioconductor
+library(annotables)     # this is from devtools
+library(gprofiler2)     # Bioconductor
+library(reshape2)
+library(kableExtra)
+library(ComplexHeatmap) # Bioconductor
+library(circlize)
+library(HGNChelper)
+```
+``` {r collapse=FALSE, message = FALSE, echo = TRUE, results = 'asis'}
+# Loading in the Data
+GSE96578 <- getGEO("GSE96578",GSEMatrix=FALSE)
+
+Overall.Design <- data.frame(Overall.Design = GSE96578@header$overall_design)
+Experiment.Summary <- data.frame(Experiment.Summary = GSE96578@header$summary)
+
+# Roughly what kind of experiment was this.
+kable(Overall.Design)
+
+
+kable(Experiment.Summary)
+
+
+
+current_gpl <- names(GPLList(GSE96578))[1]   # GPL23177
+current_gpl_info <- Meta(getGEO(current_gpl))
+
+GPL.frame <- data.frame(GPL.Title = current_gpl_info$title, Submission = current_gpl_info$submission_date, 
+           Last.Update = current_gpl_info$last_update_date,
+           Organism = current_gpl_info$organism, Number.of.Series = length(current_gpl_info$series_id), 
+           Number.of.Samples = length(current_gpl_info$sample_id) )
+
+kable(GPL.frame) %>% 
+  kable_styling(bootstrap_options = "striped", full_width = F)
+
+rm(Overall.Design, Experiment.Summary, GPL.frame)
+```
+
+
+---
+
+**Contact Information**
+```{r}
+kable(data.frame(head(Meta(GSE96578)))) %>% 
+  kable_styling(bootstrap_options = "striped", full_width = F)
+```
+
+
+---
+
+**Data Processing Protocol for all Samples from Fastq to Raw Counts**
+```{r}
+j = 0
+Data_Processing <- list()
+Extraction_Protocol <- list()
+for(i in GSE96578@gsms){
+  j = j + 1
+  Data_Processing[[j]] <- Meta(i)$data_processing
+  Extraction_Protocol[[j]] <- Meta(i)$extract_protocol_ch1
+}
+unlist(unique(Data_Processing))
+
+# [[1]]
+# [1] "The fastqs were aligned using STAR 2.5.2a and hg19"                                                             
+# [2] "The aligned files were processed using PORT gene-based normalization 
+# ( https://github.com/itmat/Normalization )"
+# [3] "The differential gene expression was done with limma"                                                           
+# [4] "Genome_build: hg19"                                                                                             
+# [5] "Supplementary_files_format_and_content: Raw counts and normalized counts"     
+```
+
+---
+
+**Extraction Protocol for all Samples**
+```{r}
+unlist(unique(Extraction_Protocol))
+
+# [[1]]
+# [1] "RNA was isolated using the Qiagen RNeasy micro kit (#74034) according to the manufacturer's 
+# protocol"                                                                   
+# [2] "RNA-seq libraries were prepared using the SMARTer Stranded Total RNA-Seq Kit for Pico Input Mammalian 
+# from Clonetech according to the manufacturer's protocol (#635007)"
+# [3] "The libraries were sequenced on an Illumina NextSeq machine using a 300 cycle high output 
+# flow cell (#15057929)"   
+
+# Removing j, i, Data_Processing, & Extraction_Protocol
+
+rm(i, j, Data_Processing, Extraction_Protocol)
+
+
+```
+
+---
+
+
+### Control and Test conditions {.tabset}
+
+**Patients with stage IV melanoma** were enrolled for treatment with **pembrolizumab (pembro), anti-PD-1 antibody (2 mg kg^-1 by infusion every 3 weeks)**. After receiving their consents, peripheral blood was obtained before treatment and before each pembro infusion every weeks for 12 weeks. [@huang2017t]
+
+For RNA sequencing experiments, total CD8 T cells were sorted using a dump/dead-CD3^+^ CD8^+^ gating strategy, by BD Aria Sorter [@huang2017t]. Dump here means the exclusion channel which is used for staining everything you do not want.
+
+So the **controls** are the RNA sequencing of total CD8 T cells before pembro infusion. 
+
+The **tests** are the RNA sequencing of total CD8 T cells 3 weeks after each pembro infusion. 
+
+Overall the samples are divided into cycle 1, 2, 3, 4, as pembro was injected at Week 0, 3, 6, 9, and the blood was drawn before pembro injection at Week 0, 3, 6, 9, 12. 
+
+**Pretreatment samples** are week 0 pre-treatment peripheral blood CD8 T cells. These are the controls.
+
+**Cycle 1 samples** are week 3 peripheral blood CD8 T cells after the week 0 pembro injection.
+
+**Cycle 2 samples** are week 6 peripheral blood CD8 T cells after the week 0, 3 pembro injection.
+
+**Cycle 3 samples** are week 9 peripheral blood CD8 T cells after the week 0, 3, 6 pembro injection.
+
+**Cycle 4 samples** are week 12 peripheral blood CD8 T cells after the week 0, 3, 6, 9 pembro injection.
+
+**Cycle 2 samples were not included** in this analysis, because other samples all had 3 replicates (from 3 patients) whereas there was only one cycle 2 sample (from a single patient).
+
+
+```{r message = FALSE, echo = TRUE, warning = FALSE, results = 'hide'}
+# Loading in the Raw Counts Matrix
+# Two count matrixes: normalized & raw counts, using the raw counts matrix
+invisible(sfiles <- getGEOSuppFiles("GSE96578"))
+fnames = rownames(sfiles)
+# [1] "/home/rstudio/GSE96578/GSE96578_AH_PBMC_RNAseq_normcounts.txt.gz"
+# [2] "/home/rstudio/GSE96578/GSE96578_AH_PBMC_RNAseq_rawcounts.txt.gz" 
+
+# Loading in the raw count matrix
+cd8_exp <-read.delim(fnames[2],header=TRUE, check.names = FALSE)
+# Discarding that cycle2 sample
+cd8_exp <- dplyr::select(.data = cd8_exp, -R_S418)
+# Removing objects for sanity sake
+rm( list = Filter( exists, c("sfiles", "fnames") ) )
+
+```
+
+**Comprehensive Sample Information Matrix** -> Not including R_S418 Cycle2 treatment in the downstream analysis, because there is no biological replicate for this Cycle2 treatment RNA-seq experiment
+```{r}
+##################################################################################
+# What do each of these R_S4xx mean? i.e. what do each of these samples represent? ----
+##################################################################################
+
+sample.info.matrix <- data.frame()
+
+# i under GSE96578@gsms is a GSE object, which can be probed using Meta() function
+# Use for loop to probe each of the 13 samples
+for(i in GSE96578@gsms){
+  sample.info.matrix <- rbind(sample.info.matrix,
+                       data.frame(Meta(i)$title, Meta(i)$characteristics_ch1[3],Meta(i)$characteristics_ch1[1],
+                                  Meta(i)$characteristics_ch1[5], Meta(i)$library_strategy, Meta(i)$instrument_model))
+}
+colnames(sample.info.matrix) <- c("Title","Treatment", "Patient Age", "Disease State",
+                                  "Data Type", "Instrument")
+# sample.info.matrix
+
+# Decided not to include R_S418 Cycle2 treatment in the downstream analysis, because
+# there is no replicate for this Cycle2 treatment RNA-seq experiment
+sample.info.matrix <- sample.info.matrix[-3,]
+
+# head(sample.info.matrix)
+# head(cd8_exp)
+
+
+# Let's create a more descriptive label for each of the samples
+
+descriptive.label <- c("pt.A.PreTreat", "pt.A.Cycle1", "pt.A.Cycle3", "pt.A.Cycle4",
+                       "pt.B.PreTreat", "pt.B.Cycle1", "pt.B.Cycle3", "pt.B.Cycle4",
+                       "pt.C.PreTreat", "pt.C.Cycle1", "pt.C.Cycle3", "pt.C.Cycle4")
+
+sample.info.matrix %>% mutate(Label = descriptive.label) -> sample.info.matrix
+
+sample.info.matrix %>% 
+  mutate(Patient = stringr::str_match(string = sample.info.matrix$Label,
+                                      pattern = "(?<=\\.)(.*)(?=\\.)")[,1]) %>%
+  mutate(Treatment = stringr::str_match(string = sample.info.matrix$Label,
+                                        pattern = "(?<=pt\\.[A-z]\\.)(.*)")[,1]) -> sample.info.matrix
+
+
+
+# Lets change the Count Matrix Sample names to the more descriptive names as well
+
+colnames(cd8_exp)[4:15] <- sample.info.matrix$Label
+
+# Removing descriptive.label for sanity sake
+
+rm( list = Filter( exists, c("descriptive.label", "i") ) )
+
+kable(sample.info.matrix) %>% 
+  kable_styling(bootstrap_options = "striped", full_width = F)
+```
+
+
+---
+
+### Normalization {.tabset}
+
+<br>
+**Dimension of the Raw Counts Matrix**
+```{r}
+dim(cd8_exp)
+```
+
+There are 28383 features (i.e. genes/nongenes) & 12 out of 15 columns are
+samples; other 3 are ID, gene coordinate, gene symbol.
+<br>
+This raw count matrix consists of 4 triplet replicates so 12 samples in 
+total: Pre-treatment, Cycle 1, Cycle 3, Cycle 4 
+<br><br>
+**Gene Duplicates**, Some factors like Y_RNA appears multiple times because there are different Y_RNA at different chromosomal regions.
+```{r}
+# head(cd8_exp)
+
+# Create a table of row counts for each factor (i.e. gene name or maybe sth else) in the geneSymbol column 
+summarized_gene_counts <- sort(table(cd8_exp$geneSymbol),decreasing = TRUE)
+
+# Lets only include those factors with more than 1 count
+kable(t(summarized_gene_counts[which(summarized_gene_counts>1)[1:10]])) %>% 
+  kable_styling(bootstrap_options = "striped", full_width = F)
+# Y_RNA       U3      snoU13   Metazoa_SRP   SNORA40     7SK         U1          U6     SNORA31     SNORA70 
+# 174         19      9        8             7           6           4           4      3           3 
+```
+
+**Filtering out weakly expressed and noninformative (non-aligned) features, all of which were done in edgeR**
+
+Genes with very low count across all libraries provide very little evidence for differential expression. Moreover,
+the discreteness of these low counts interferes with some of the statistical approximations used in edgeR
+package [@Robinson:2010:Bioinformatics:19910308]. 
+<br> <br>
+Thus, these genes should be considered as outliers and need to be filtered out before downstream analysis.
+<br>
+<br>
+A gene also should be filtered with count-per-million (CPM) rather than raw counts, as raw counts do not account for
+differences in library sizes between samples[@Robinson:2010:Bioinformatics:19910308].
+<br>
+<br>
+$CPM_{i} = \frac{X_{i}}{N}\cdot 10^{6}$
+<br>
+<br>
+Here $X_{i}$ is the count for certain gene and $\frac{N}{10^{6}}$ is the number of fragments you sequenced in the library per million.
+By processing the raw count to counts per million, the library size differences between samples can be accounted for.
+<br><br>
+**Filtered Matrix based on EdgeR's Recommendation**
+<br>
+The recommendation is to remove features without at least 1 read per million in n of the samples, where n is the size of the smallest group of replicates. There are 3 samples of each cycle (i.e. pre-treatment, cycle1, cycle 3, cycle4) if I do not include Cycle2 treatment so n = 3.
+```{r, warning = FALSE}
+cpms <- cpm(cd8_exp[,4:15])
+
+rownames(cpms) <- cd8_exp[,1]
+
+# Filtering out low counts
+keep <- rowSums(cpms >1) >=3 # So n is 3 here, and all features must have 1 read per million in 3 of the samples
+
+cd8_exp_filtered <- cd8_exp[keep, ]
+
+# dim(cd8_exp)            # [1] 28383    15
+# dim(cd8_exp_filtered)   # [1] 17118    15
+before_after <- t(data.frame(Before = dim(cd8_exp), After = dim(cd8_exp_filtered)))
+colnames(before_after) <- c("Number of Features", "Number of Columns")
+kable(before_after) %>% 
+  kable_styling(bootstrap_options = "striped", full_width = F)
+rm(before_after)
+```
+<br>
+Interestingly, many duplicate genes were also filtered out during the process
+```{r}
+# Did this solve the duplicate issue?
+
+summarized_gene_counts_filtered <- sort(table(cd8_exp_filtered$geneSymbol),decreasing = TRUE)
+```
+**Before**
+```{r}
+kable(t(summarized_gene_counts[which(summarized_gene_counts>1)[1:10]])) %>% 
+  kable_styling(bootstrap_options = "striped", full_width = F)
+# Y_RNA       U3      snoU13   Metazoa_SRP   SNORA40     7SK        U1          U6     SNORA31     SNORA70 
+# 174         19      9        8             7           6          4           4      3           3 
+```
+**After**
+```{r}
+# After
+kable(t(summarized_gene_counts_filtered[which(summarized_gene_counts_filtered>1)[1:10]])) %>% 
+  kable_styling(bootstrap_options = "striped", full_width = F)
+# Y_RNA     U3   SNORA40   7SK    CRIP1   CRYBG3   GOLGA7B   IDS   KBTBD4   KIAA0391 
+# 29        4    3         2      2       2        2         2     2        2 
+
+
+
+# Removing Data for Sanity Sake
+rm( list = Filter( exists, c("keep", "summarized_gene_counts_filtered", "cpms", "GSE96578", "summarized_gene_counts") ) )
+
+
+```
+**TMM Normalization**
+<br>
+Normalization is a necessary step to adjust the data so that we can focus more on biological variation than technical variation.
+<br><br>
+TMM between each pair of samples are used to calculate the scale factors for each library size that minimize log fold changes between the samples for most genes.
+<br> <br>
+The product of the library size and the scaling factor is called effective library size, which replaces the original library
+size in all downstream analysis.[@robinson2010scaling]
+```{r, Warning = FALSE}
+##################################################################################
+# Normalization - First step in Analysis ----
+##################################################################################
+
+# We want to look a biological variation rather than technical variation
+# Our sampling of data will form certain distribution like normal, bimodal, poisson, power log (all are well characterized)
+# or some other distributions
+
+# Boxplot of each of the samples
+cd8_data2plot <- log2(cpm(cd8_exp_filtered[,4:15]))
+
+# Log2 transformation of the cpm of the new filtered expression data
+
+cd8_exp_filtered_cpm_log2 <- log2(cpm(cd8_exp_filtered[,4:15]))
+
+# Trimmed Mean - is the average after removing the upper and lower percentage of the data points 
+# 30% of the M values and 5% of the A values by default
+
+# Application of TMM to the dataset 
+
+# Creating an edgeR container for RNAseq count data
+filtered_data_matrix <- as.matrix(cd8_exp_filtered[,4:15])
+rownames(filtered_data_matrix) <- cd8_exp_filtered$id
+
+# colnames(cd8_exp_filtered)[4:15]
+
+# Creating DGElist object from the filtered expression matrix
+# Here, group parameter is a vector/factor that gives the experimental group/condition for each sample/library
+# For this dataset, it is the different cycles of Anti-PD-1 antibody treatment to the melanoma patients
+TreatmentType <- sample.info.matrix$Treatment
+names(TreatmentType) <- sample.info.matrix$Title
+# TreatmentType
+  
+dGEList.for.TMM <-  DGEList(counts=filtered_data_matrix, group= TreatmentType)
+
+# Removing TreatmentType, filtered_data_matrix
+
+rm(TreatmentType, filtered_data_matrix)
+
+# edgeRUsersGuide()
+# The calcNormFactors function normalizes for RNA composition by finding a set of scaling
+# factors for the library sizes that minimize the log-fold changes between the samples for most
+# genes. The default method for computing these scale factors uses a trimmed mean of M-
+#   values (TMM) between each pair of samples [30]
+
+# Robinson, M.D. and Oshlack, A. (2010). A scaling normalization method for
+# differential expression analysis of RNA-seq data. Genome Biology 11, R25.
+
+# We call the product of the original library
+# size and the scaling factor the effective library size. The effective library size replaces the
+# original library size in all downsteam analyses.
+
+dGEList.for.TMM <-  calcNormFactors(dGEList.for.TMM)
+# str(dGEList.for.TMM)
+```
+**Side to Side Boxplot of Before & After TMM**
+<br>
+<br>
+There is a great difference before and after the normalization. The interquartile range (between Q1 and Q3) has narrowed down a lot.
+There are also more outliers in the highly expressed genes in all samples. 
+```{r, Warning = FALSE}
+# Getting the normalized data
+normalized_counts <- cpm(dGEList.for.TMM, log = TRUE) # When log is TRUE, it returns log2 values.
+# Side to Side Boxplot Before and After TMM
+
+par(mfrow=c(1,2))
+
+cd8_data2plot <- log2(cpm(cd8_exp_filtered[,4:15]))
+boxplot(cd8_data2plot, xlab = "Samples", ylab = "log2 CPM", 
+        las = 2, cex = 0.5, cex.lab = 0.5,
+        cex.axis = 0.5, main = "CD8+ T Samples")
+
+# Adding a median line at each boxplot (median of the medians of each sample)
+abline(h = median(apply(cd8_data2plot, 2, median)), col = "green", lwd = 0.6, lty = "dashed")
+
+d_data2plot <- normalized_counts
+boxplot(d_data2plot, xlab = "Samples", ylab = "log2 CPM", 
+        las = 2, cex = 0.5, cex.lab = 0.5,
+        cex.axis = 0.5, main = "CD8+ T Samples after TMM")
+
+# Adding a median line at each boxplot (median of the medians of each sample)
+abline(h = median(apply(d_data2plot, 2, median)), col = "green", lwd = 0.6, lty = "dashed")
+
+par(mfrow=c(1,1))
+
+# Removing Data
+rm( d_data2plot)
+```
+
+**Side to Side Density Plot - Before (left) & After (right) Normalization**
+<br>
+<br>
+The two density plots also show great differences. The log2-cpm transformed gene counts in 5 range have decreased a lot 
+compared to the original pre-normalization sample.
+```{r}
+par(mfrow = c(1,2))
+# Distribution of our Data - Density Plot
+
+counts_density <- apply(cd8_exp_filtered_cpm_log2, MARGIN = 2, density)
+#calculate the limits across all the samples
+xlim <- 0; ylim <- 0
+for (i in 1:length(counts_density)) {
+  xlim <- range(c(xlim, counts_density[[i]]$x)); 
+  ylim <- range(c(ylim, counts_density[[i]]$y))
+}
+cols <- rainbow(length(counts_density))
+ltys <- rep(1, length(counts_density))
+#plot the first density plot to initialize the plot
+plot(counts_density[[1]], xlim=xlim, ylim=ylim, type="n", 
+     ylab="Smoothing density of log2-CPM", main="", cex.lab = 0.85)
+#plot each line
+for (i in 1:length(counts_density)) lines(counts_density[[i]], col=cols[i], lty=ltys[i])
+#create legend
+legend("topright", colnames(cd8_data2plot),  
+       col=cols, lty=ltys, cex=0.75, 
+       border ="blue",  text.col = "green4", 
+       merge = TRUE, bg = "gray90")
+
+# Removing Data for sanity sake
+rm(i, xlim, ylim, cols, ltys, counts_density)
+
+# After Normalization ----
+
+
+
+# Getting distribution graph for normalized data
+counts_density <- apply(normalized_counts, MARGIN = 2, density)
+#calculate the limits across all the samples
+xlim <- 0; ylim <- 0
+for (i in 1:length(counts_density)) {
+  xlim <- range(c(xlim, counts_density[[i]]$x)); 
+  ylim <- range(c(ylim, counts_density[[i]]$y))
+}
+cols <- rainbow(length(counts_density))
+ltys <- rep(1, length(counts_density))
+#plot the first density plot to initialize the plot
+plot(counts_density[[1]], xlim=xlim, ylim=ylim, type="n", 
+     ylab="Smoothing density of log2-CPM", main="", cex.lab = 0.85)
+#plot each line
+for (i in 1:length(counts_density)) lines(counts_density[[i]], col=cols[i], lty=ltys[i])
+#create legend
+legend("topright", sample.info.matrix$Label,  
+       col=cols, lty=ltys, cex=0.75, 
+       border ="blue",  text.col = "green4", 
+       merge = TRUE, bg = "gray90")
+
+# Removing Data for Sanity Sake
+rm(counts_density, cols, ltys, xlim, ylim, i, cd8_data2plot)
+par(mfrow = c(1,1))
+```
+
+<br><br>
+**Handling Biological Replicate with MDS graph**
+
+```{r}
+# Multidimensional Scaling Plots between Samples
+plotMDS(dGEList.for.TMM, labels=sample.info.matrix$Label,
+        col = c("darkgreen","blue","cyan", "green")[factor(sample.info.matrix$Patient)])
+```
+The same patient samples clustered closely together along x-axis. Within the same patient samples, there were variations of the samples along the y-axis, depending on the treatment.
+Interesting, while treatment cycle 1 samples were the outliers for patient A & B, treatment cycle 3 sample was the outlier for patient C.
+
+<br><br>
+**Plot of Mean Variance**
+<br><br>
+Same plot in the Normalization Tab
+```{r}
+model_design <- model.matrix(~sample.info.matrix$Patient + sample.info.matrix$Treatment  + 0)
+dGEList.for.TMM <- estimateDisp(dGEList.for.TMM, model_design)
+
+plotMeanVar(dGEList.for.TMM, show.raw.vars = TRUE, show.tagwise.vars=TRUE, 
+            show.ave.raw.vars = TRUE,  
+            NBline=TRUE,
+            show.binned.common.disp.vars = TRUE)
+
+# Removing model_design for Sanity Sake
+rm(model_design)
+```
+
+According to, edgeR, dispersion squared is biological coefficient of variation (BCV) so dispersion is a measure of how 
+much variation there is in the samples.
+The raw variances of the counts are the gray dots
+<br><br>
+Variance = mean (assumption of poisson distribution) is the solid black line.
+<br>
+Variances estimated using the tagwise dispersions are blue dots.
+<br>
+Variances estimated using the common dispersions are the solid blue lines.
+<br><br>
+My samples seem to fit well with the NB distribution in terms of mean-variance.
+<br><br>
+**I have decided to keep these biological replicates of Cycle 1, 3, 4, and Pre-treatment for my downstream analysis.**
+
+
+---
+
+### Identity Mapping{.tabset}
+
+Using hg19 (GRCh37) human gene ensembl to map the HGNC symbol using ensembl ID as reads were aligned using hg19 reference genome (stated in the data processing protocol section).
+
+```{r, message = FALSE, warning = FALSE}
+ensembl_gr37 <- useMart(biomart = "ensembl", dataset = "hsapiens_gene_ensembl",  host="grch37.ensembl.org")
+cd8_exp_filtered$id  <- gsub(pattern = "^gene:", replacement = "", x = cd8_exp_filtered$id, ignore.case = TRUE)
+
+# head(cd8_exp_filtered)
+
+# Now Doing the Identifier Mapping
+
+conversion_stash <- "cd8_id_conversion.rds"
+if(file.exists(conversion_stash)){
+  cd8_id_conversion <- readRDS(conversion_stash)
+} else {
+  cd8_id_conversion <- getBM(attributes = c("ensembl_gene_id","hgnc_symbol"),
+                               filters = c("ensembl_gene_id"),
+                               values = factor(cd8_exp_filtered$id),
+                               mart = ensembl_gr37)
+  saveRDS(cd8_id_conversion, conversion_stash)
+}
+```
+
+
+**Mapping Result**
+<br>
+The difference between the number of mappings that are not missing values or empty strings and the number of rows in the normalized set 
+<br><br>
+
+```{r}
+# Getting the difference between the number of mappings and the number of rows in the normalized set
+# BUT this doesn't necessarily mean we are missing only that many
+
+nrow(normalized_counts) - (sum(!is.na(cd8_id_conversion$hgnc_symbol)) - sum(nchar(cd8_id_conversion$hgnc_symbol) == 0))
+```
+
+```{r}
+# Merging the new identifers
+
+# head(rownames(normalized_counts))
+rownames(normalized_counts) <- gsub(pattern = "^gene:", replacement = "", x = rownames(normalized_counts),
+                                    ignore.case = TRUE)
+# head(rownames(normalized_counts))
+
+# all.y = TRUE; right outer join where the normalized_counts is preserved
+# by.x = 1 refers to the ensembl_gene_id column of cd8_id_conversion, and by.y = 0 refers to the row names of the
+# normalized_counts
+
+normalized_counts_annot <- merge(x = cd8_id_conversion, y = normalized_counts,by.x = 1, by.y = 0, all.y=TRUE)
+
+rm( current_gpl_info)
+```
+
+**Duplicated HUGO symbols data.frame with head()**
+```{r message = FALSE, echo = TRUE, warning = FALSE, results = 'hide'}
+duplicated.hugo <- normalized_counts_annot[duplicated(normalized_counts_annot$hgnc_symbol),c(1,2)]
+duplicated.hugo.matrix <- getBM(attributes = c('ensembl_gene_id', 'external_gene_name', "hgnc_symbol"),
+                        filters = "ensembl_gene_id",
+                        values = duplicated.hugo$ensembl_gene_id,
+                        mart = ensembl_gr37)
+```
+```{r}
+head(duplicated.hugo)
+```
+
+There was 1 HGNC symbol duplicate that is neither an empty string nor a missing value. Others were all empty string or missing values.
+<br><br>
+**The HGNC Symbol Duplicate**
+```{r}
+the.index <- which(!(nchar(duplicated.hugo$hgnc_symbol) == 0) & !(is.na(duplicated.hugo$hgnc_symbol)))   # [1] 2115
+
+duplicated.hugo.matrix[ the.index, ]
+#      ensembl_gene_id external_gene_name hgnc_symbol
+# 2115 ENSG00000266036            MIR3615     MIR3615
+```
+
+And the different ensembl IDs that correspond to the symbol "MIR3615"
+```{r}
+normalized_counts_annot[which(normalized_counts_annot$hgnc_symbol == "MIR3615"), 1:6]
+
+#       ensembl_gene_id hgnc_symbol pt.A.PreTreat pt.A.Cycle1 pt.A.Cycle3 pt.A.Cycle4
+# 16356 ENSG00000264624     MIR3615      1.585288    1.585288    1.585288    1.585288
+# 16416 ENSG00000266036     MIR3615      1.585288    1.585288    1.585288    2.205500
+
+```
+Searching the two ensembl gene id at the http://grch37.ensembl.org/ tells me that one is forward strand and the another is reverse strand.
+<br><br>
+I've decided to keep both of the MIR3614 rows because the expression level was different between the forward and reverse strand, interestingly. And based on my understanding from molecular biology classes, the RNA polymerase does not know whether the genes should be transcribed in either one of the strands (i.e. in either two directions), although RNA polymerase does prematurely halt when it is on the non-coding strand. 
+<br>
+
+---
+
+<br>
+
+**Other 2708 genes**
+<br><br>
+Using HGNChelper package to check whether the external gene names have better up-to-date recommended names for the other 2708 expression values that do not map to HGNC symbol -> only 82 of them had recommended names.
+```{r, message = FALSE, echo = TRUE, warning = FALSE, results = 'hide'}
+
+checked.Gene.Symbols <- checkGeneSymbols(duplicated.hugo.matrix$external_gene_name)
+```
+
+
+```{r}
+sum(!is.na(checked.Gene.Symbols$Suggested.Symbol))
+
+```
+
+Out of 2708 genes, 1475 genes start with RP11 prefix, that refer to RP11 BAC clones [@rp11_bac_clones]. RP11 is a code identifying an individual anonymous human donor to a the BAC clone library started at Roswell Park Cancer Institute by Dr.Pieter de Jong. These genes are the genetic dark matter, and thus are kept.
+```{r}
+# Checking those that start with RP11
+length(grep(x = checked.Gene.Symbols$x, ignore.case = TRUE, pattern = "^Rp11", value = TRUE)) # [1] 1475
+```
+No specific pattern found in the other 1233 genes (2708 - 1475 = 1233). Kept because this portion has the potential to be significant in the downstream differential gene analysis.
+<br><br>
+**head() view of those genes**
+```{r}
+Not.start.with.RP11 <- grep(x = checked.Gene.Symbols$x, ignore.case = TRUE, pattern = "^Rp11", value = TRUE, invert = TRUE)
+head(Not.start.with.RP11)
+```
+
+```{r, message = FALSE, echo = TRUE, warning = FALSE, results = 'hide'}
+# Final Dataset
+
+conversion_stash <- "cd8_id_conversion_final.rds"
+if(file.exists(conversion_stash)){
+  cd8_id_conversion_final <- readRDS(conversion_stash)
+} else {
+  cd8_id_conversion_final <- getBM(attributes = c("ensembl_gene_id","hgnc_symbol", "external_gene_name"),
+                               filters = c("ensembl_gene_id"),
+                               values = factor(cd8_exp_filtered$id),
+                               mart = ensembl_gr37)
+  saveRDS(cd8_id_conversion_final, conversion_stash)
+}
+
+normalized_counts_annot_final <- merge(x = cd8_id_conversion_final, y = normalized_counts,by.x = 1, by.y = 0, all.y=TRUE)
+checked.Gene.Symbols <- checkGeneSymbols(normalized_counts_annot_final$external_gene_name)
+normalized_counts_annot_final <- cbind(normalized_counts_annot_final, checked.Gene.Symbols[,c(2,3)])
+```
+
+Two ensembl gene ids were found to be duplicates. 
+
+```{r}
+normalized_counts_annot_final[duplicated(normalized_counts_annot_final$ensembl_gene_id)|
+                                duplicated(normalized_counts_annot_final$ensembl_gene_id, fromLast = TRUE), -c(4:15)]
+```
+
+And the rows with suggested symbol were kept.
+```{r}
+normalized_counts_annot_final %>% filter(!(hgnc_symbol %in% c("MIR29B1", "SNORD116-21"))) -> normalized_counts_annot_final
+
+normalized_counts_annot_final %>% filter(ensembl_gene_id %in% c("ENSG00000226380", "ENSG00000261069"))
+
+```
+**Head() view & Dimension of my final curated data**
+
+```{r}
+head(normalized_counts_annot_final)
+dim(normalized_counts_annot_final)
+saveRDS(normalized_counts_annot_final, file = "Preprocessed_CD8_AntiPD1.RDS")
+```
+The final coverage of my dataset has 17118 genes, with just one duplicate gene (same hgnc symbol). And it has 4 different treatment groups, where each group have 3 biological replicates.
+<br><br>
+There are 3 samples of each cycle (i.e. pre-treatment, cycle1, cycle 3, cycle4).
+<br><br>
+Originally there were 28383 genes & 13 instead of 12 samples that I have for the final matrix. The one cycle 2, was discarded because it had no biological replicates.
+
+
+---
+
+##
+
+## Differential Gene Expression Analysis{.tabset}
+
+Two ways of detecting differential genes between samples were introduced in lecture:
+
+* Limma-Trend
+
+* Negative Binomial Generalized Linear Models with Quasi-likelihood Test
+
+---
+
+**Multidimensional Scaling Plot of the Samples**
+
+```{r}
+# Multidimensional Scaling Plots between Samples
+plotMDS(dGEList.for.TMM, labels=sample.info.matrix$Label,
+        col = c("darkgreen","blue","cyan", "green")[factor(sample.info.matrix$Patient)])
+```
+
+Because variability not only exists between treatment cycles but also in patients, both patient and treatment have been integrated as the independent factors to do the linear fit.
+
+---
+
+
+### Limma-Trend
+
+Here I've took the expression matrix out of my finalized counts matrix, and created the model design matrix where each row corresponds to each of the 12 samples and each column corresponds to the independent variables that affect the gene expression level between the samples.
+<br><br>
+**Kable head() view of the expression matrix with first 7 columns**
+```{r, results = 'asis'}
+
+# Create the data matrix for linear fit
+
+expressionMatrix <- as.matrix(normalized_counts_annot_final[,4:15])
+rownames(expressionMatrix) <- normalized_counts_annot_final$ensembl_gene_id
+colnames(expressionMatrix) <- colnames(normalized_counts_annot_final[,4:15])
+minimalSet <- ExpressionSet(assayData=expressionMatrix)
+
+# Making those independent variables into factors for genewise linear regression
+sample.info.matrix$Treatment <- factor(sample.info.matrix$Treatment, levels = c("PreTreat", "Cycle1", "Cycle3", "Cycle4"))
+sample.info.matrix$Patient <- factor(sample.info.matrix$Patient)
+
+model_design_pat <- model.matrix(~0 + Treatment + Patient , data = sample.info.matrix)
+
+kable(head(expressionMatrix)[,1:7])%>% 
+  kable_styling(bootstrap_options = "striped", full_width = F)
+```
+
+<br><br>
+**My Design Matrix for the Linear Fit**
+<br>
+Note that Patient A is embedded into the intercept
+```{r, results = 'asis'}
+kable(model_design_pat) %>% 
+  kable_styling(bootstrap_options = "striped", full_width = F)
+```
+**Contrast Matrix for Comparisons**
+<br>
+Contrast matrix allows the user to see comparisons between specific pairs.
+```{r, results = 'asis'}
+# Contrast matrices - tells me what linear regressions contrasts.fit() subtracts to do statistical test between the genes
+contrast.matrix <- makeContrasts(TreatmentCycle4-TreatmentPreTreat,
+                                 TreatmentCycle3-TreatmentPreTreat,
+                                 TreatmentCycle1-TreatmentPreTreat,
+                                 TreatmentCycle4-TreatmentCycle3,
+                                 PatientB-PatientC,
+                                 levels=model_design_pat)
+kable(contrast.matrix)%>% 
+  kable_styling(bootstrap_options = "striped", full_width = F)
+```
+
+<br><br>
+
+**Doing Linear Fit and Empirical Bayes with trend = TRUE in the below code**
+```{r}
+# Making the linear regression models for each gene
+fit <- lmFit(minimalSet, model_design_pat)
+
+
+
+
+fit2 = contrasts.fit(fit, contrast.matrix)
+# trend = TRUE for RNA-seq
+fit2 = eBayes(fit2, trend = TRUE)
+```
+
+**Differential Gene Result Summary with Benjamini Hochberg Correction for Multiple Hypothesis Testing**
+<br><br> 
+I have either used Benjamini Hochberg correction for multiple hypothesis testing or no correction for all my downstream analysis. 
+<br><br>
+Benjamini Hochberg correction was chosen because Bonferroni method is a lot more stringent correction that is used when a single false positive can be a problem. On the other hand, benjamini hochberg method tries to control the false discovery rate. This test is used when the cost of false negative is way higher than the cost of false positive in the analysis, which is the case in differential gene analysis.
+<br><br>
+Sadly, there were no differences detected between the different treatment cycles, although patient bias was detected.
+```{r, results = 'asis'}
+# benjamini hochberg correction for multiple hypothesis testing
+summary(decideTests(fit2, adjust.method = "BH")) %>% as.data.frame() -> try
+
+kable(try %>% dcast(Var1 ~ Var2, value.var = "Freq")  %>% arrange(-row_number())) %>% 
+  kable_styling(bootstrap_options = "striped", full_width = F)
+
+
+rm(try)
+
+```
+**Differential Gene Result Summary with No Correction on P Value (Multiple Hypothesis Testing)**
+<br><br>
+I've decided to analyze the gene lists of **treatment cycle 3 vs pre-treatment**, **treatment cycle 4 vs treatment cycle 3**, and **Patient B vs Patient C** for thresholded overrepresentation analysis. Note these selected genes do have p value < 0.05 but have not undergone multiple hypothesis testing corrections.
+```{r, results = 'asis', warning = FALSE, message = FALSE}
+summary(decideTests(fit2, adjust.method = "none", p.value = 0.05)) %>% as.data.frame() -> try
+
+kable(try %>% dcast(Var1 ~ Var2)  %>% arrange(-row_number())) %>% 
+  kable_styling(bootstrap_options = "striped", full_width = F)
+
+
+rm(try)
+```
+
+I've used the **annotables package** to transfer gene annotations to the ensemble gene ids to Cycle4.vs.Cycle3 gene list. There is even gene descriptions column, which is attached to the far right of the data frame.
+<br><br>
+**head() view of the Cycle4.vs.Cycle3 Gene List**
+```{r}
+Cycle4.vs.Cycle3 <- topTable(fit2, adjust.method = "none", number = nrow(expressionMatrix), 
+                             coef = "TreatmentCycle4 - TreatmentCycle3", p.value = 0.05)
+
+# Trying to combine the hgnc symbol & external gene name to the this differential results frame
+
+Cycle4.vs.Cycle3 %>% rownames_to_column %>% 
+  rename(ensembl_gene_id = rowname) %>% 
+  left_join(y = normalized_counts_annot_final[,1:3], by = "ensembl_gene_id" ) %>% 
+  subset(select=c(1,8,9, 2:7)) -> Cycle4.vs.Cycle3
+
+
+# From the annotables library
+data("grch37")
+grch37 <- rename(grch37, ensembl_gene_id = ensgene)
+# View(grch37)
+
+# Combine the annotatations from grch37 as well, using left join by ensembl_gene_id
+
+Cycle4.vs.Cycle3 %>% left_join(y = grch37[,c(1,9)], by = "ensembl_gene_id") -> Cycle4.vs.Cycle3
+head(Cycle4.vs.Cycle3)
+saveRDS(Cycle4.vs.Cycle3, file = "Cycle4.vs.Cycle3.rds")
+```
+
+Same annotation transfer to the Cycle3.vs.PreTreatment gene list was done.
+<br><br>
+**head() view of the Cycle3.vs.PreTreatment Gene List**
+```{r}
+Cycle3.vs.PreTreat <- topTable(fit2, adjust.method = "none", number = nrow(expressionMatrix), 
+                             coef = "TreatmentCycle3 - TreatmentPreTreat", p.value = 0.05)
+
+# Trying to combine the hgnc symbol & external gene name to the this differential results frame
+
+Cycle3.vs.PreTreat %>% rownames_to_column %>% 
+  rename(ensembl_gene_id = rowname) %>% 
+  left_join(y = normalized_counts_annot_final[,1:3], by = "ensembl_gene_id" ) %>% 
+  subset(select=c(1,8,9, 2:7)) -> Cycle3.vs.PreTreat
+
+
+# Combine the annotatations from grch37 as well, using left join by ensembl_gene_id
+
+Cycle3.vs.PreTreat %>% left_join(y = grch37[,c(1,9)], by = "ensembl_gene_id") -> Cycle3.vs.PreTreat
+head(Cycle3.vs.PreTreat)
+saveRDS(Cycle3.vs.PreTreat, file = "Cycle3.vs.PreTreat.rds")
+
+
+```
+Same annotation transfer to the PatientB.vs.PatientC gene list was done.
+<br><br>
+**head() view of the PatientB.vs.PatientC Gene List**
+```{r}
+PatientB.vs.PatientC <- topTable(fit2, adjust.method = "none", number = nrow(expressionMatrix), 
+                             coef = "PatientB - PatientC", p.value = 0.05)
+
+# Trying to combine the hgnc symbol & external gene name to the this differential results frame
+
+PatientB.vs.PatientC %>% rownames_to_column %>% 
+  rename(ensembl_gene_id = rowname) %>% 
+  left_join(y = normalized_counts_annot_final[,1:3], by = "ensembl_gene_id" ) %>% 
+  subset(select=c(1,8,9, 2:7)) -> PatientB.vs.PatientC
+
+
+# Combine the annotatations from grch37 as well, using left join by ensembl_gene_id
+
+PatientB.vs.PatientC %>% left_join(y = grch37[,c(1,9)], by = "ensembl_gene_id") -> PatientB.vs.PatientC
+head(PatientB.vs.PatientC)
+saveRDS(PatientB.vs.PatientC, file = "PatientB.vs.PatientC.rds")
+
+
+```
+
+---
+
+### Quasi-likelihood Test - EdgeR
+
+Unfortunately, no statistically significant genes showed up with the quasi-likelihood test, even without the multiple hypothesis testing corrections. **This made me select the genes from the Limma-Trend analysis.**
+<br><br>
+The analysis started with creating the DGEList object from the expression set, followed by dispersion estimation, normalization factor calculation.
+```{r}
+d = DGEList(counts=minimalSet, group= sample.info.matrix$Treatment)
+d <- estimateDisp(d, model_design_pat)
+d <- calcNormFactors(d)
+
+```
+Negative Binomial generalized linear models were fit using glmQLFit().
+```{r}
+fit <- glmQLFit(d, model_design_pat)
+```
+**No statistically significant results shown for Cycle 4 vs Cycle 3 samples with or without multiple hypothesis correction**
+```{r}
+
+contrast.matrix <- makeContrasts(TreatmentCycle4-TreatmentCycle3,
+                                 levels=model_design_pat)
+
+qlf.cycle4_vs_cycle3 <- glmQLFTest(fit, contrast= contrast.matrix)
+```
+With correction
+```{r}
+summary(decideTests(qlf.cycle4_vs_cycle3, adjust.method = "BH")) %>% as.data.frame() %>% arrange(-row_number()) %>% 
+  dplyr::select(c(-2)) %>% rename("Cycle 4 vs Cycle 3"= Var1)
+```
+Without correction
+```{r}
+summary(decideTests(qlf.cycle4_vs_cycle3, adjust.method = "none"))%>% as.data.frame() %>% arrange(-row_number()) %>% 
+  dplyr::select(c(-2)) %>% rename("Cycle 4 vs Cycle 3"= Var1)
+# rm(qlf.cycle4_vs_cycle3)
+```
+
+**No statistically significant results shown even between patients with multiple hypothesis correction**
+```{r}
+contrast.matrix <- makeContrasts(PatientB-PatientC,
+                                 levels=model_design_pat)
+
+qlf.B_vs_C <- glmQLFTest(fit, contrast= contrast.matrix)
+summary(decideTests(qlf.B_vs_C, adjust.method = "BH")) %>% as.data.frame() %>% arrange(-row_number()) %>% 
+  dplyr::select(c(-2)) %>% rename("Patient B vs Patient C"= Var1)
+```
+
+**6 statistically significant genes shown even between patients without correction**
+```{r}
+summary(decideTests(qlf.B_vs_C, adjust.method = "none")) %>% as.data.frame() %>% arrange(-row_number()) %>% 
+  dplyr::select(c(-2)) %>% rename("Patient B vs Patient C"= Var1)
+
+```
+
+**Same Comparisons as Limma-Trend except PatientB-PatientC tested here, and no statistically significant genes found overall even without correction**
+```{r}
+contrast.matrix <- makeContrasts(TreatmentCycle4-TreatmentPreTreat,
+                                 TreatmentCycle3-TreatmentPreTreat,
+                                 TreatmentCycle1-TreatmentPreTreat,
+                                 TreatmentCycle4-TreatmentCycle3,
+                                 levels=model_design_pat)
+qlf <- glmQLFTest(fit, contrast= contrast.matrix)
+summary(decideTests(qlf, adjust.method = "BH")) %>% as.data.frame() %>% arrange(-row_number()) %>% 
+  dplyr::select(c(-2)) %>% rename("LR test one 3 degrees of freedom"= Var1)
+
+# fit2 not deleted as it contains information about all gene list (i.e. non-threshold gene list for limma-trend)
+
+
+
+```
+**Again, this prompted me to use the gene lists derived from the Limma-trend analysis**
+
+---
+
+### Volcano Plots
+
+This is for reference to the number of differential genes detected without multiple hypothesis testing correction in limma-trend analysis. These genes were used to generate the volcano plots
+
+```{r, results = 'asis', warning = FALSE, message = FALSE}
+summary(decideTests(fit2, adjust.method = "none", p.value = 0.05)) %>% as.data.frame() -> try
+
+kable(try %>% dcast(Var1 ~ Var2)  %>% arrange(-row_number())) %>% 
+  kable_styling(bootstrap_options = "striped", full_width = F)
+
+
+rm(try)
+```
+
+Initializing the plot data
+
+```{r, warning = "FALSE", results = "hide", message = "FALSE"}
+
+  
+# Volcano Plot
+gene.names <- data.frame(ensembl_gene_id = rownames(fit2$coefficients))
+gene.names %>%  left_join(normalized_counts_annot_final, by  = "ensembl_gene_id") %>% 
+  dplyr::select(c(1,17)) -> gene.names  
+  
+# colnames(fit2$coefficients)
+# [1] "TreatmentCycle4 - TreatmentPreTreat"
+# [2] "TreatmentCycle3 - TreatmentPreTreat"
+# [3] "TreatmentCycle1 - TreatmentPreTreat"
+# [4] "TreatmentCycle4 - TreatmentCycle3"  
+# [5] "PatientB - PatientC"    
+
+# Cycle 4 vs Cycle 3
+volcano.plot.Cycle4.Cycle3 <- data.frame(log2FC = fit2$coefficients[,4], p_value = fit2$p.value[,4], 
+                                         Color = "grey", stringsAsFactors = "FALSE")
+volcano.plot.Cycle4.Cycle3 <- cbind(gene.names, volcano.plot.Cycle4.Cycle3)
+
+volcano.plot.Cycle4.Cycle3$Color[volcano.plot.Cycle4.Cycle3$p_value < 0.05] = "blue"
+
+volcano.plot.Cycle4.Cycle3 %>% 
+  mutate(neg_log10_p_value = -log10(volcano.plot.Cycle4.Cycle3$p_value)) -> volcano.plot.Cycle4.Cycle3
+
+# IFN gamma index
+IFNG.index <- grep(pattern = "^IFNG$", x = volcano.plot.Cycle4.Cycle3$Suggested.Symbol, 
+                   ignore.case = TRUE)
+
+
+# Cycle 3 vs Pre-Treatment
+
+volcano.plot.Cycle3.PreTreat <- data.frame(log2FC = fit2$coefficients[,2], p_value = fit2$p.value[,2], 
+                                         Color = "grey", stringsAsFactors = "FALSE")
+volcano.plot.Cycle3.PreTreat <- cbind(gene.names, volcano.plot.Cycle3.PreTreat)
+
+volcano.plot.Cycle3.PreTreat$Color[volcano.plot.Cycle3.PreTreat$p_value < 0.05] = "blue"
+
+volcano.plot.Cycle3.PreTreat %>% 
+  mutate(neg_log10_p_value = -log10(volcano.plot.Cycle3.PreTreat$p_value)) -> volcano.plot.Cycle3.PreTreat
+
+# Patient B vs Patient C
+
+
+volcano.plot.PatientB.PatientC <- data.frame(log2FC = fit2$coefficients[,5], p_value = fit2$p.value[,5], 
+                                         Color = "grey", stringsAsFactors = "FALSE")
+volcano.plot.PatientB.PatientC <- cbind(gene.names, volcano.plot.PatientB.PatientC)
+
+volcano.plot.PatientB.PatientC$Color[volcano.plot.PatientB.PatientC$p_value < 0.05] = "blue"
+
+volcano.plot.PatientB.PatientC %>% 
+  mutate(neg_log10_p_value = -log10(volcano.plot.PatientB.PatientC$p_value)) -> volcano.plot.PatientB.PatientC
+
+```
+
+Interferon gamma gene will be highlighted in all volcano plots, as in wet lab it is used as an indicator to check whether CD8 T cells are activated or not, using flow cytometry.
+
+---
+
+**Treatment Cycle 4 vs Cycle 3 Volcano Plot using Limma Results**
+<br><br>
+Note the p value has not been subjected to multiple hypothesis testing correction.
+
+```{r}
+plot(x = volcano.plot.Cycle4.Cycle3$log2FC, y = volcano.plot.Cycle4.Cycle3$neg_log10_p_value, 
+     pch = 16, cex = 0.5, xlab = "Log2 Fold Change", ylab = "-log10(P-value)", 
+     col = volcano.plot.Cycle4.Cycle3$Color)
+points(volcano.plot.Cycle4.Cycle3$log2FC[IFNG.index], 
+       volcano.plot.Cycle4.Cycle3$neg_log10_p_value[IFNG.index], col = "red", cex = 1.5)
+legend(x = -2.1, y = 1, c("Not significant", "Significant", "IFN-g"),
+        cex = 1.0, col = c("grey", "blue","red"), pch = c(16, 16, 1),
+       bty = "n")
+
+```
+
+
+---
+
+**Treatment Cycle 3 vs Pre-Treatment Volcano Plot using Limma Results**
+<br><br>
+Note the p value has not been subjected to multiple hypothesis testing correction.
+
+```{r}
+plot(x = volcano.plot.Cycle3.PreTreat$log2FC, y = volcano.plot.Cycle3.PreTreat$neg_log10_p_value, 
+     pch = 16, cex = 0.5, xlab = "Log2 Fold Change", ylab = "-log10(P-value)", 
+     col = volcano.plot.Cycle3.PreTreat$Color)
+points(volcano.plot.Cycle3.PreTreat$log2FC[IFNG.index], 
+       volcano.plot.Cycle3.PreTreat$neg_log10_p_value[IFNG.index], col = "red", cex = 1.5)
+legend(x = -1.8, y = 0.85, c("Not significant", "Significant", "IFN-g"),
+        cex = 1.0, col = c("grey", "blue","red"), pch = c(16, 16, 1),
+       bty = "n")
+
+```
+
+This is unexpected because it is expected for interferon gamma to be upregulated during the treatment cycle compared to the pre-treatment.
+
+---
+
+**Patient B vs Patient C Volcano Plot using Limma Results**
+<br><br>
+Note the p value has not been subjected to multiple hypothesis testing correction.
+
+```{r}
+plot(x = volcano.plot.PatientB.PatientC$log2FC, y = volcano.plot.PatientB.PatientC$neg_log10_p_value, 
+     pch = 16, cex = 0.5, xlab = "Log2 Fold Change", ylab = "-log10(P-value)", 
+     col = volcano.plot.PatientB.PatientC$Color)
+points(volcano.plot.PatientB.PatientC$log2FC[IFNG.index], 
+       volcano.plot.PatientB.PatientC$neg_log10_p_value[IFNG.index], col = "red", cex = 1.5)
+legend(x = -3.7, y = 1.7, c("Not significant", "Significant", "IFN-g"),
+        cex = 1.0, col = c("grey", "blue","red"), pch = c(16, 16, 1),
+       bty = "n")
+
+```
+
+For the first time, interferon gamma is amongst the statistically significant genes. This plot shows it is relatively downregulated in patient B compared to patient C, or relatively upregulated in patient C compared to patient B,
+
+---
+
+### Heatmaps{.tabset}
+
+This is for reference to the number of differential genes detected without multiple hypothesis testing correction in limma-trend analysis. These genes were used to generate the heatmaps.
+
+```{r, results = 'asis', warning = FALSE, message = FALSE}
+summary(decideTests(fit2, adjust.method = "none", p.value = 0.05)) %>% as.data.frame() -> try
+
+kable(try %>% dcast(Var1 ~ Var2)  %>% arrange(-row_number())) %>% 
+  kable_styling(bootstrap_options = "striped", full_width = F)
+
+
+rm(try)
+```
+
+---
+
+**Visualizing the top hits as heatmaps and Checking whether conditions cluster together or not**
+
+```{r}
+# Create a numerical matrix that we can create a heatmap from
+
+heatmap_matrix <- normalized_counts_annot_final[,4:15]
+rownames(heatmap_matrix) <- normalized_counts_annot_final$ensembl_gene_id
+colnames(heatmap_matrix) <- colnames(normalized_counts_annot_final)[4:15]
+```
+
+---
+
+**Cycle 4 vs Cycle 3 Top Hits**
+<br><br>
+*I could not find the way to change the order of the column cluster so that cycle 4 and cycle 3 are right next to each other, aside from making the cluster_column = FALSE*
+```{r}
+# Heatmap for Cycle 4 vs Cycle 3 Top hits----
+
+heatmap_matrix_tophits <- t(
+  scale(t(heatmap_matrix[
+    which(rownames(heatmap_matrix) %in% Cycle4.vs.Cycle3$ensembl_gene_id),])))
+
+if(min(heatmap_matrix_tophits) == 0){
+  heatmap_col = colorRamp2(c( 0, max(heatmap_matrix_tophits)), 
+                           c( "white", "red"))
+} else {
+  heatmap_col = colorRamp2(c(min(heatmap_matrix_tophits), 0, max(heatmap_matrix_tophits)), c("blue", "white", "red"))
+}
+
+
+# Aligning Cycle-wise
+index.1 <- grep(colnames(heatmap_matrix_tophits),
+                pattern = "Cycle4")
+index.2 <-  grep(colnames(heatmap_matrix_tophits),
+                 pattern = "Cycle3")
+index.3 <- 1:12
+index.3 <- setdiff(index.3, index.1)
+index.3 <- setdiff(index.3, index.2)
+# index.3
+
+heatmap_matrix_tophits<- heatmap_matrix_tophits[, c(index.1, index.2, index.3 )]
+
+# Building Heatmap
+
+current_heatmap <- Heatmap(as.matrix(heatmap_matrix_tophits),
+                           cluster_rows = TRUE,
+                           cluster_columns = TRUE,
+                           show_row_dend = TRUE,
+                           show_column_dend = TRUE, 
+                           col=heatmap_col,
+                           show_column_names = TRUE, 
+                           show_row_names = FALSE,
+                           show_heatmap_legend = TRUE,
+                           heatmap_legend_param = list(title = "Normalized Expr Lvl"),
+)
+
+
+current_heatmap
+```
+My conditions of treatment cycle 4 and cycle 3 do cluster together. This is because these top hits are the upregulated and downregulated genes identified when comparing between cycle 4 and cycle 3. This also suggests that there are clusters of gene that upregulate or downregulate themselves from cycle 3 to cycle 4 treatment.
+
+
+---
+
+**Cycle 3 vs Pre-Treatment Top Hits**
+<br><br>
+*I could not find a way to change the order of the column cluster so that cycle 3 and pre-treatment are right next to each other, aside from making the cluster_column = FALSE*
+
+```{r}
+# Heatmap for Cycle 3 vs Pre-Treatment ----
+
+heatmap_matrix_tophits <- t(
+  scale(t(heatmap_matrix[
+    which(rownames(heatmap_matrix) %in% Cycle3.vs.PreTreat$ensembl_gene_id),])))
+
+if(min(heatmap_matrix_tophits) == 0){
+  heatmap_col = colorRamp2(c( 0, max(heatmap_matrix_tophits)), 
+                           c( "white", "red"))
+} else {
+  heatmap_col = colorRamp2(c(min(heatmap_matrix_tophits), 0, max(heatmap_matrix_tophits)), c("blue", "white", "red"))
+}
+
+
+# Aligning Cycle-wise
+index.1 <- grep(colnames(heatmap_matrix_tophits),
+                pattern = "Cycle3")
+index.2 <-  grep(colnames(heatmap_matrix_tophits),
+                 pattern = "PreTreat")
+index.3 <- 1:12
+index.3 <- setdiff(index.3, index.1)
+index.3 <- setdiff(index.3, index.2)
+# index.3
+
+heatmap_matrix_tophits<- heatmap_matrix_tophits[, c(index.1, index.2, index.3 )]
+
+# Building Heatmap
+
+current_heatmap <- Heatmap(as.matrix(heatmap_matrix_tophits),
+                           cluster_rows = TRUE,
+                           cluster_columns = TRUE,
+                           show_row_dend = TRUE,
+                           show_column_dend = TRUE, 
+                           col=heatmap_col,
+                           show_column_names = TRUE, 
+                           show_row_names = FALSE,
+                           show_heatmap_legend = TRUE,
+                           heatmap_legend_param = list(title = "Normalized Expr Lvl")
+)
+
+
+current_heatmap
+```
+
+My conditions of treatment cycle 3 and pre-treatment do cluster together, for the same reasons as above. This also suggests that there are clusters of gene that upregulate or downregulate themselves from pre-treatment to cycle 3 treatment.
+
+---
+
+
+**Patient B vs Patient C Top Hits**
+
+```{r}
+# Heatmap for Patient B vs Patient C ----
+
+heatmap_matrix_tophits <- t(
+  scale(t(heatmap_matrix[
+    which(rownames(heatmap_matrix) %in% PatientB.vs.PatientC$ensembl_gene_id),])))
+
+if(min(heatmap_matrix_tophits) == 0){
+  heatmap_col = colorRamp2(c( 0, max(heatmap_matrix_tophits)), 
+                           c( "white", "red"))
+} else {
+  heatmap_col = colorRamp2(c(min(heatmap_matrix_tophits), 0, max(heatmap_matrix_tophits)), c("blue", "white", "red"))
+}
+
+
+# Aligning Cycle-wise
+
+index.1 <- grep(colnames(heatmap_matrix_tophits),
+                pattern = "pt.B")
+index.2 <-  grep(colnames(heatmap_matrix_tophits),
+                 pattern = "pt.C")
+index.3 <- 1:12
+index.3 <- setdiff(index.3, index.1)
+index.3 <- setdiff(index.3, index.2)
+# index.3
+
+heatmap_matrix_tophits<- heatmap_matrix_tophits[, c(index.1, index.2, index.3 )]
+
+# Building Heatmap
+
+current_heatmap <- Heatmap(as.matrix(heatmap_matrix_tophits),
+                           cluster_rows = TRUE,
+                           cluster_columns = TRUE,
+                           show_row_dend = TRUE,
+                           show_column_dend = TRUE, 
+                           col=heatmap_col,
+                           show_column_names = TRUE, 
+                           show_row_names = FALSE,
+                           show_heatmap_legend = TRUE,
+                           heatmap_legend_param = list(title = "Normalized Expr Lvl")
+)
+
+
+current_heatmap
+
+```
+
+My conditions of patient B and patient C do cluster together, which suggest that patients respond differently to anti-PD-1 therapy. Interestingly, patient A and C seems to have similar upregulated and downregulated genes compared to patient B.
+
+
+---
+
+## Thresholded Overrepresentation Analysis
+
+### Chosen T-ORA Method & Annotations{.tabset}
+
+#### Method & Annotation
+
+**Which method did you choose and why? What annotation data did you use and why?**
+<br><br>
+I've decided to use gProfiler, the biggest reasons being my familiarity with it and the existence of R package, although the package is just a website wrapper. 
+<br>
+Moreover, this method already encompasses the major annotation sources that are regularly updated such as GO, KEGG, Reactome, WikiPathways, miRTarBase for miRNA, TRANSFAC for regulatory motifs, Human Protein Atlas for tissue specificity, CORUM for protein complex data, and Human Phenotype Ontology for human disease phenotype associations. GO, KEGG, Reactomes, and WikiPathways are well-known and well maintained annotation sources, and other annotation sources each provide different specialties.
+<br><br>
+**Which test does it use?**
+<br><br>
+Its main function for functional enrichment analysis, g:GOSt, uses the well proven cumulative hypergeometric test, also known as Fisher's exact test. The null hypothesis of the Fisher's exact test is that the gene list is a random sample from the population. The alternative hypothesis is that the gene list is not a random sample from the population, i.e. there are more "certain genes" in the sample so that the gene list cannot be called a random sample from the population.
+<br><br>
+
+
+---
+
+#### Annotation Version
+
+**What version of the annotation are you using?**
+
+https://biit.cs.ut.ee/gprofiler/page/faq
+<br>
+So according to the FAQ section of gprofiler under the question "How often is g:Profiler updated?", it follows ENSEMBL quarterly update cycle with few weeks to months delay. And the current data source version (annotation version) can be seen from “Show data versions” link under the “Data sources” option.
+<br><br>
+As of February 29th which was when I ran my gProfiler analysis on, it uses:
+<br><br>
+
+* GO:MF – releases/2019-07-01
+
+* GO:CC – releases/2019-07-01
+
+* GO:BP – releases/2019-07-01
+
+* KEGG – KEGG FTP Release 2019-09-30
+
+* REAC – annotations: ensembl/ classes: 2019-10-2
+
+* WP –  20190910
+
+* TF –  annotations: TRANSFAC Release 2019.1/ classes: v2
+
+* MIRNA – Release 7.0
+
+* HPA –   annotations: HPA website: 2017-12-01/ classes: script: 2018-03-19
+
+* CORUM – 03.09.2018 Corum 3.0
+
+* HP –    hpo.annotations.monthly #157
+
+<br><br>
+*Turn this code off if you want to get fresh results from g:GOSt.*
+```{r loading, warning = FALSE, message = FALSE, results = 'hide', echo= TRUE}
+# this code is just to not let gost run all the time everytime I rerun the code.
+# turn off this code if you want to get new results from gost
+
+# TO check if trycatch properly works
+tryCatch(
+  {load("chicken")},
+  error = function(e){}
+  )
+
+# Loading in the gost data
+tryCatch(
+  {load("ORA_gosts.RData")},
+  error = function(e){}
+)
+
+```
+
+
+---
+
+### Returned Geneset with Threshold{.tabset}
+
+#### T-ORA of Differential Genes between Treatment Cycles{.tabset}
+
+These are analysis pertaining to Cycle 4 vs Cycle 3, and Cycle 3 vs Pre-Treatment.
+<br><br>
+To summarize, T-ORA with the differential genes between treatment cycles was not informative. This suggests that although anti PD-1 treatment has been successful to the point that Nobel Prize in Medicine has been awarded, it still is affected by lots of different factors, some of which are unknown. In other words, there are still lots of room for improvement in the field of immunocheckpoint inhibitor.
+
+##### Treatment Cycle 4 vs Cycle 3
+
+<br>
+First the whole gene list was divided into upregulated gene list and downregulated gene list.
+```{r}
+# First divide the list into upregulated and downregulated genes 
+
+Cycle4.vs.Cycle3 %>% distinct(external_gene_name, .keep_all = TRUE) -> Cycle4.vs.Cycle3
+
+Cycle4.vs.Cycle3 %>% filter(logFC > 0 & P.Value < 0.05) -> Up_Regulated_Cycle4.vs.Cycle3
+Cycle4.vs.Cycle3 %>% filter(logFC < 0 & P.Value < 0.05) -> Down_Regulated_Cycle4.vs.Cycle3
+```
+
+---
+
+**Number of Upregulated genes**
+```{r}
+nrow(Up_Regulated_Cycle4.vs.Cycle3) 
+```
+
+---
+
+**Number of Downregulated genes**
+```{r}
+nrow(Down_Regulated_Cycle4.vs.Cycle3)
+```
+
+---
+
+**Did all genes either classify into upregulated or downregulated genes?**
+```{r}
+nrow(Cycle4.vs.Cycle3) == (nrow(Up_Regulated_Cycle4.vs.Cycle3) + nrow(Down_Regulated_Cycle4.vs.Cycle3)) # [1] TRUE
+```
+
+
+---
+
+**Difference of g:GOSt's Mapping of Gene Identifiers based on Query Input**
+<br><br>
+One particularly important point I've realized was that depending on what queries you feed into the function, the number of input to gene mappings differs. To elaborate, gProfiler uses g:Convert to map the gene identifiers you feed in to Ensembl gene identifiers (ENSG) to do hypergeometric tests.
+```{r}
+# Do not rerun this if already ran 
+if(!all(c("upreg_genelist_cycle4_cycle3", "upreg_genelist_cycle4_cycle3_hgnc") %in% ls())){
+  upreg_genelist_cycle4_cycle3 <- gost(query = Up_Regulated_Cycle4.vs.Cycle3$external_gene_name, 
+                                     organism = "hsapiens", evcodes = TRUE, user_threshold = 0.05,  correction_method = "fdr")
+
+  upreg_genelist_cycle4_cycle3_hgnc <- gost(query = Up_Regulated_Cycle4.vs.Cycle3$hgnc_symbol, 
+                                     organism = "hsapiens", evcodes = TRUE, user_threshold = 0.05,  correction_method = "fdr") 
+}
+
+
+if(!exists(x = "upreg_genelist_cycle4_cycle3_ensembl")){
+  upreg_genelist_cycle4_cycle3_ensembl <- gost(query = Up_Regulated_Cycle4.vs.Cycle3$ensembl_gene_id, 
+                                     organism = "hsapiens", evcodes = TRUE, user_threshold = 0.05, correction_method = "fdr")
+}
+```
+
+
+**head() view of the gene mapping of HGNC symbols to ENSG**
+
+```{r}
+head(upreg_genelist_cycle4_cycle3_hgnc$meta$genes_metadata$query$query_1$mapping)
+```
+
+---
+
+Original length of the upregulated gene query
+```{r}
+nrow(Up_Regulated_Cycle4.vs.Cycle3)
+```
+
+---
+
+Number of HGNC symbols that got mapped into Ensembl IDs for hypergeometric test
+```{r}
+length(upreg_genelist_cycle4_cycle3_hgnc$meta$genes_metadata$query$query_1$mapping) 
+```
+
+---
+
+Number of external gene symbols from HGNChelper package that got mapped into Ensembl IDs for hypergeometric test
+```{r}
+length(upreg_genelist_cycle4_cycle3$meta$genes_metadata$query$query_1$mapping)     
+```
+
+---
+
+Number of Ensembl Gene IDs that got mapped into Ensembl IDs for hypergeometric test
+```{r}
+length(upreg_genelist_cycle4_cycle3_ensembl$meta$genes_metadata$query$query_1$mapping) 
+```
+**I've decided to use the Ensembl Gene ID as the input for all my analysis as it is the most well recognized ID by the gProfiler.**
+
+
+
+---
+
+**Result of Returned Genesets for Upregulated, Downregulated, and Whole Gene Lists for Cycle 4 vs Cycle 3 Treatment**
+<br><br>
+Running g:GOSt to get the genesets for downregulated and whole gene lists as well, at the threshold of Benjamini Hochberg FDR corrected p value < 0.05.
+```{r}
+# Do not rerun if already exists
+if(!all(c("downreg_genelist_cycle4_cycle3_ensembl","Cycle4_Cycle3_Whole_gene") %in% ls())){
+  
+  downreg_genelist_cycle4_cycle3_ensembl <- gost(query = Down_Regulated_Cycle4.vs.Cycle3$ensembl_gene_id, 
+                                             organism = "hsapiens", evcodes = TRUE, user_threshold = 0.05,
+                                             correction_method = "fdr")
+
+  Cycle4_Cycle3_Whole_gene <- gost(query = Cycle4.vs.Cycle3$ensembl_gene_id, 
+                        organism = "hsapiens", evcodes = TRUE, user_threshold = 0.05,
+                        correction_method = "fdr")
+}
+```
+
+---
+
+**Returned Genesets for Upregulated Gene List for Cycle 4 vs Cycle 3**
+```{r}
+result.up.cycle4.cycle3 <- upreg_genelist_cycle4_cycle3_ensembl$result
+result.up.cycle4.cycle3 <- result.up.cycle4.cycle3 %>% dplyr::select(c(3:16)) %>% subset(select=c(7,9, 1:6,8, 14))
+nrow(result.up.cycle4.cycle3)
+
+kable(result.up.cycle4.cycle3) %>% 
+  kable_styling() %>%
+  scroll_box(width = "800px", height = "500px")
+
+```
+At threshold of Benjamini Hochberg FDR corrected p value < 0.05, 48 upregulated genesets are returned, with 47 of them from CORUM and the last one from WP. 
+<br><br>
+The unfortunately part of the CORUM terms is that these terms refer to protein complexes, and all of them have just one intersection gene, which means these terms are not meaningful.
+<br><br>
+When you scroll down to the bottom, there is one WP term referring to IL-2 signaling pathway. IL-2 is a required cytokine that serves as stimulatory signal for naive CD8 T cells to become activated. So after treatment cycle 4, compared to cycle 3, CD8 T cells are activated to an extent
+<br><br>
+Compared to returned genesets from whole gene list below, the upregulated CORUM terms as well as WP term have disappeared.
+
+---
+
+**Returned Genesets for Downregulated Gene List for Cycle 4 vs Cycle 3**
+```{r}
+result.down.cycle4.cycle3 <- downreg_genelist_cycle4_cycle3_ensembl$result
+result.down.cycle4.cycle3 <- result.down.cycle4.cycle3 %>% dplyr::select(c(3:16)) %>% subset(select=c(7,9, 1:6,8, 14))
+nrow(result.down.cycle4.cycle3)
+
+kable(result.down.cycle4.cycle3) %>% 
+  kable_styling() %>%
+  scroll_box(width = "800px", height = "500px")
+```
+
+At threshold of Benjamini Hochberg FDR corrected p value < 0.05, 99 downregulated genesets are returned from CORUM, GO, and TRANSFAC. 
+<br><br>
+The cell migration terms popped up as being associated with the downregulated gene list. This is weird because the RNA seq is from peripheral CD8 T cells, which need to migrate to the tumor microenvironment to fight cancer. These terms suggest that the peripheral CD8 T cells' activations may had been attenuated from Cycle 3 treatment to Cycle 4 treatment.
+<br><br>
+Compared to whole gene list, the ruffle terms have survived, meaning the ruffle associated genes were highly enriched in the downregulated gene list. Interestingly, the 3 ruffle genes from the upregulated gene list have joined with the 8 ruffle genes from the downregulated gene list.
+
+---
+
+**Returned Genesets for Whole Gene List for Cycle 4 vs Cycle 3**
+```{r}
+result.whole.cycle4.cycle3 <- Cycle4_Cycle3_Whole_gene$result
+result.whole.cycle4.cycle3 <- result.whole.cycle4.cycle3 %>% dplyr::select(c(3:16)) %>% subset(select=c(7,9, 1:6,8, 14))
+nrow(result.whole.cycle4.cycle3)
+
+kable(result.whole.cycle4.cycle3) %>% 
+  kable_styling() %>%
+  scroll_box(width = "800px", height = "500px")
+```
+At threshold of Benjamini Hochberg FDR corrected p value < 0.05, 5 genesets are returned from GO:CC and WP for whole gene list. 
+<br><br>
+Ruffle terms have reappeared, with genes associated with ruffle from both upregulated and downregulated gene lists. Membrane ruffling has been associated with cell migration, which is again required for CD8 T cells to migrate into the tumor site.
+<br><br>
+TSLP and Wnt signaling pathway terms have newly popped up in the whole gene list. This suggests that the peripheral CD8 T cells in both cycle 4 and cycle 3 treatment have these pathways activated for survival and maturation.
+<br><br>
+Chromosomal and microsatellite instability for colorectal cancer term was ignored as the patients had melanoma.
+<br><br>
+
+##### Treatment Cycle 3 vs Pre-Treatment
+
+<br>
+First the whole gene list was divided into upregulated gene list and downregulated gene list.
+```{r}
+# First divide the list into upregulated and downregulated genes 
+
+Cycle3.vs.PreTreat %>% distinct(external_gene_name, .keep_all = TRUE) -> Cycle3.vs.PreTreat
+
+Cycle3.vs.PreTreat %>% filter(logFC > 0 & P.Value < 0.05) -> Up_Regulated_Cycle3.vs.PreTreat
+Cycle3.vs.PreTreat %>% filter(logFC < 0 & P.Value < 0.05) -> Down_Regulated_Cycle3.vs.PreTreat
+```
+
+---
+
+**Number of Upregulated genes**
+```{r}
+nrow(Up_Regulated_Cycle3.vs.PreTreat) 
+```
+
+---
+
+**Number of Downregulated genes**
+```{r}
+nrow(Down_Regulated_Cycle3.vs.PreTreat)
+```
+
+---
+
+**Did all genes either classify into upregulated or downregulated genes?**
+```{r}
+nrow(Cycle3.vs.PreTreat) == (nrow(Up_Regulated_Cycle3.vs.PreTreat) + nrow(Down_Regulated_Cycle3.vs.PreTreat)) # [1] TRUE
+```
+
+---
+
+**Result of Returned Genesets for Upregulated, Downregulated, and Whole Gene Lists for Cycle 3 vs Pre-Treatment**
+<br><br>
+Running g:GOSt to get the genesets for downregulated and whole gene lists as well, at the threshold of Benjamini Hochberg FDR corrected p value < 0.05.
+```{r}
+if(!all(c("upreg_genelist_cycle3_pretreat_ensembl", "downreg_genelist_cycle3_pretreat_ensembl","cycle3_pretreat_Whole_gene")
+        %in% ls())){
+
+  upreg_genelist_cycle3_pretreat_ensembl <- gost(query = Up_Regulated_Cycle3.vs.PreTreat$ensembl_gene_id, 
+                                     organism = "hsapiens", evcodes = TRUE, user_threshold = 0.05, correction_method = "fdr")
+
+  downreg_genelist_cycle3_pretreat_ensembl <- gost(query = Down_Regulated_Cycle3.vs.PreTreat$ensembl_gene_id, 
+                                             organism = "hsapiens", evcodes = TRUE, user_threshold = 0.05,
+                                             correction_method = "fdr")
+
+  cycle3_pretreat_Whole_gene <- gost(query = Cycle3.vs.PreTreat$ensembl_gene_id, 
+                        organism = "hsapiens", evcodes = TRUE, user_threshold = 0.05,
+                        correction_method = "fdr")
+}
+
+```
+
+---
+
+Original length of the upregulated gene query
+```{r}
+nrow(Up_Regulated_Cycle3.vs.PreTreat)
+```
+
+---
+
+Number of Ensembl Gene IDs that got mapped into Ensembl IDs for hypergeometric test
+```{r}
+length(upreg_genelist_cycle3_pretreat_ensembl$meta$genes_metadata$query$query_1$mapping)  
+```
+
+---
+
+**Returned Genesets for Upregulated Gene List for Cycle 3 vs Pre-Treatment**
+```{r}
+result.up.cycle3_pretreat <- upreg_genelist_cycle3_pretreat_ensembl$result
+result.up.cycle3_pretreat <- result.up.cycle3_pretreat %>% dplyr::select(c(3:16)) %>% subset(select=c(7,9, 1:6,8, 14))
+nrow(result.up.cycle3_pretreat)
+
+kable(result.up.cycle3_pretreat) %>% 
+    kable_styling() %>%
+  scroll_box(width = "800px", height = "500px")
+```
+At threshold of Benjamini Hochberg FDR corrected p value < 0.05, 71 upregulated genesets are returned, from CORUM and GO.
+<br><br>
+Again the CORUM terms are not informative because the number of gene in the intersection is 1 except "39s ribosomal subunit, mitochondrial", which has 2 corresponding genes. 
+<br><br>
+The GO terms of cell and cell part are not informative as well, for obvious reasons.
+<br><br>
+Unfortunately, not much was learnt from this T-ORA analysis.
+
+---
+
+**Returned Genesets for Downregulated Gene List for Cycle 3 vs Pre-Treatment**
+```{r}
+result.down.cycle3_pretreat <- downreg_genelist_cycle3_pretreat_ensembl$result
+result.down.cycle3_pretreat <- result.down.cycle3_pretreat %>% dplyr::select(c(3:16)) %>% subset(select=c(7,9, 1:6,8, 14))
+nrow(result.down.cycle3_pretreat)
+
+kable(result.down.cycle3_pretreat) %>% 
+  kable_styling() %>%
+  scroll_box(width = "800px", height = "500px")
+```
+
+At threshold of Benjamini Hochberg FDR corrected p value < 0.05, 55 downregulated genesets are returned from CORUM and GO. Aside from the first two terms from CORUM, the rest had intersection size of 1. The first term, PAR4-BACE1 complex is involved in the cleavage of amyloid precursor protein in neurons, and no publications have explained its role in immunity.
+<br><br>
+The 3 GO terms at the bottom were "synaptic vesicle", "exocytic vesicle", "RAVE complex". First two terms are related to neurons, and the third term is related to metabolism. 
+<br><br>
+Unfortunately, this result is not very useful in telling the difference in CD8 T cells' transcriptome between Cycle 3 and pre-treatment. 
+
+---
+
+**Returned Genesets for Whole Gene List for Cycle 3 vs Pre-Treatment**
+```{r}
+result.whole.cycle3_pretreat <- cycle3_pretreat_Whole_gene$result
+result.whole.cycle3_pretreat <- result.whole.cycle3_pretreat %>% dplyr::select(c(3:16)) %>% subset(select=c(7,9, 1:6,8, 14))
+kable(result.whole.cycle3_pretreat) %>% 
+    kable_styling() %>%
+    scroll_box(width = "800px", height = "500px")
+```
+At threshold of Benjamini Hochberg FDR corrected p value < 0.05, 3 genesets are returned from CORUM.
+<br><br>
+No terms were immune related, and the 3 genesets had little to tell as they had genes from both upregulated and downregulated gene lists.
+<br><br>
+Compared to the genesets from upregulated and downregulated gene lists, the genesets from whole gene list had new terms, but like the above to genesets did not really explain the difference in immune response in CD8 T cells.
+
+
+####
+
+
+
+#### T-ORA of Differential Genes between Patients{.tabset}
+
+
+
+Because the T-ORA of differential genes were not informative, I've decided to do another T-ORA between patient B and C in my samples.
+
+<br>
+First the whole gene list was divided into upregulated gene list and downregulated gene list.
+
+
+```{r}
+# First divide the list into upregulated and downregulated genes 
+
+PatientB.vs.PatientC %>% distinct(external_gene_name, .keep_all = TRUE) -> PatientB.vs.PatientC
+
+PatientB.vs.PatientC %>% filter(logFC > 0 & P.Value < 0.05) -> Up_Regulated_PatientB.vs.PatientC
+PatientB.vs.PatientC %>% filter(logFC < 0 & P.Value < 0.05) -> Down_Regulated_PatientB.vs.PatientC
+```
+
+---
+
+**Number of Upregulated genes**
+```{r}
+nrow(Up_Regulated_PatientB.vs.PatientC)
+```
+
+---
+
+**Number of Downregulated genes**
+```{r}
+nrow(Down_Regulated_PatientB.vs.PatientC)
+```
+
+---
+
+**Did all genes either classify into upregulated or downregulated genes?**
+
+
+```{r}
+nrow(PatientB.vs.PatientC) == (nrow(Up_Regulated_PatientB.vs.PatientC) + nrow(Down_Regulated_PatientB.vs.PatientC)) # [1] TRUE
+```
+
+
+---
+
+**Result of Returned Genesets for Upregulated, Downregulated, and Whole Gene Lists for Patient B vs Patient C**
+<br>
+Because there are a lot more up and down regulated genes between patients, I decided to filter the g:GOSt results with more stringent condition of p value < 0.01. Moreover, I also decided to filter the terms from TRANSFAC because what transcription factor motifs are enriched was not my interest, HP (Human Phenotype Ontology) because samples are normal CD8 T cells in TME, and Human Protein Atlas because we know the expression is not from other tissues but peripheral CD8 T cells. 
+<br><br>
+Running g:GOSt to get the genesets for downregulated and whole gene lists as well, at the threshold of Benjamini Hochberg FDR corrected p value < 0.01.
+
+
+```{r}
+if(!all(c("upreg_genelist_B_C_ensembl","downreg_genelist_B_C_ensembl","B_C_Whole_gene") %in% ls())){
+  
+  upreg_genelist_B_C_ensembl <- gost(query = Up_Regulated_PatientB.vs.PatientC$ensembl_gene_id, 
+                                     organism = "hsapiens", evcodes = TRUE, user_threshold = 0.01, correction_method = "fdr",
+                                   sources = c("GO", "KEGG", "REAC", "MIRAN", "CORUM", "WP"))
+
+  downreg_genelist_B_C_ensembl <- gost(query = Down_Regulated_PatientB.vs.PatientC$ensembl_gene_id, 
+                                             organism = "hsapiens", evcodes = TRUE, user_threshold = 0.01,
+                                             correction_method = "fdr",
+                                     sources = c("GO", "KEGG", "REAC", "MIRAN", "CORUM", "WP"))
+
+  B_C_Whole_gene <- gost(query = PatientB.vs.PatientC$ensembl_gene_id, 
+                        organism = "hsapiens", evcodes = TRUE, user_threshold = 0.01,
+                        correction_method = "fdr",
+                       sources = c("GO", "KEGG", "REAC", "MIRAN", "CORUM",  "WP"))
+  
+}
+
+```
+
+
+
+---
+
+Original length of the upregulated gene query
+```{r}
+nrow(Up_Regulated_PatientB.vs.PatientC)
+```
+
+---
+
+Number of Ensembl Gene IDs that got mapped into Ensembl IDs for hypergeometric test
+```{r}
+length(upreg_genelist_B_C_ensembl$meta$genes_metadata$query$query_1$mapping) 
+```
+
+
+---
+
+**Returned Genesets for Upregulated Gene List for Patient B vs Patient C**
+```{r}
+result.up.B_C <- upreg_genelist_B_C_ensembl$result
+result.up.B_C <- result.up.B_C %>% dplyr::select(c(3:16)) %>% subset(select=c(7,9, 1:6,8, 14))
+kable(result.up.B_C) %>%   kable_styling() %>%
+  scroll_box(width = "800px", height = "500px")
+```
+
+At threshold of Benjamini Hochberg FDR corrected p value < 0.01, 4 upregulated genesets are returned, from GO and KEGG. GEF activity, Golgi apparatus genes, GTPase binding, and G protein related Rap1 pathway were upregulated in Patient B compared to Patient C. Unfortunately, it is hard to know what exactly is activating this G protein pathway more in patient B than patient C, as well as, how this contributes to the CD8 T cells behavior.
+<br><br>
+Compared to the genesets from whole gene list which is shown below, this geneset is missing a lot of the immune related pathway terms that are enriched in downregulated gene list.
+
+---
+
+**Returned Genesets for Downregulated Gene List for Patient B vs Patient C**
+```{r}
+result.down.B_C <- downreg_genelist_B_C_ensembl$result
+result.down.B_C <- result.down.B_C %>% dplyr::select(c(3:16)) %>% subset(select=c(7,9, 1:6,8, 14))
+nrow(result.down.B_C)
+
+# https://haozhu233.github.io/kableExtra/awesome_table_in_html.html
+kable(result.down.B_C) %>% 
+  kable_styling() %>%
+  scroll_box(width = "800px", height = "500px")
+```
+
+At threshold of Benjamini Hochberg FDR corrected p value < 0.01, 534 downregulated genesets are returned from GO, KEGG, REAC, and WP. 
+<br><br>
+Finally, all the type I immunity related immune terms I was hoping to see popped up, Interferon-gamma is the key inflammatory cytokine that is activated during type I immunity activation. Type I interferon activation terms are also shown, indicating the greater activation of inflammation in patient C than patient B. T cell activation and antigen presentation, which are necessary to fight the tumor by presenting tumor-associated antigen also popped up. Response to IL-12, a type I immunity cytokine, also popped up. Similar terms appeared in Reactome, KEGG, and WP.
+<br><br>
+And interestingly, the "PD-1 signaling" and "Cancer immunotherapy by PD-1 blockade" terms popped up at the very bottom. Since we know that this is a comparison between patient B and C, these terms indicate the difference in patients is a huge factor in determining the efficacy of the checkpoint inhibitor.
+<br><br>
+Overall, this result shows that the immunocheckpoint inhibitor may not be able to turn the tide against cancer in certain patients. There is definitely a patient specific bias in the type I immunity response.
+
+---
+
+**Returned Genesets for Whole Gene List for Patient B vs Patient C**
+```{r}
+result.whole.B_C <- B_C_Whole_gene$result
+result.whole.B_C <- result.whole.B_C %>% dplyr::select(c(3:16)) %>% subset(select=c(7,9, 1:6,8, 14))
+nrow(result.whole.B_C)
+
+kable(result.whole.B_C) %>% 
+  kable_styling() %>%
+  scroll_box(width = "800px", height = "500px")
+```
+
+At threshold of Benjamini Hochberg FDR corrected p value < 0.01, 502 genesets are returned from GO, KEGG, REAC, and WP for whole gene list. 
+<br><br>
+Lots of the similar type I immunity related terms popped up due to the genes in the downregulated gene list. The GTP related genesets from upregulated gene list were gone. 
+<br><br>
+
+```{r}
+# Saving all the gost results into one rds, so that every time this is ran, the gost does not need to run again.
+save(list = c("downreg_genelist_B_C_ensembl", "downreg_genelist_cycle4_cycle3_ensembl", 
+               "downreg_genelist_cycle3_pretreat_ensembl", "upreg_genelist_B_C_ensembl", "upreg_genelist_cycle3_pretreat_ensembl"
+               ,"upreg_genelist_cycle4_cycle3_ensembl",  "B_C_Whole_gene", "Cycle4_Cycle3_Whole_gene", "cycle3_pretreat_Whole_gene",
+              "upreg_genelist_cycle4_cycle3", "upreg_genelist_cycle4_cycle3_hgnc"), envir = parent.frame(),
+     file = "ORA_gosts.RData")
+```
+
+##
+
+
+
+## Interpretation{.tabset}
+
+
+
+### With Regards to Original Paper{.tabset}
+**Do the over-representation results support conclusions or mechanism discussed in the original paper?**
+
+The over-representation results do support the conclusions discussed in the original paper. 
+<br><br>
+One of the conclusions stated in the discussion section was that the ratio of exhausted T cell invigoration score to tumor burden rather than just the T cell invigoration score can predict the clinical outcomes and responses of the patients. [@huang2017t] My T-ORA result do clearly show the patient bias in this therapy. Almost all of the CD8 T cell immunity related terms popped up between patients,whereas only one term associated with T cell activation, "IL-2 signaling pathway", popped up in T-ORA between treatment cycles.
+<br><br>
+The paper also stated the involvement of other parameters such as anatomical location of metastases, PD-L1 expression, and mutational phenotype add further resolution to how anti-PD-1 treatment can respond in different patients. [@huang2017t]
+<br><br>
+These conclusions indicate that although immunocheckpoint inhibitors have been successful to garner prestigous awards like Nobel prize, there are still lots of research we can do to improve the therapy.
+
+### Evidences Supporting My Result{.tabset}
+**Can you find evidence, i.e. publications, to support some of the results that you see? How does this evidence support your results?**
+
+As expected, there are lots of publications as well as ongoing research that try to address this question of what determines the efficacy of anti-PD-1 therapy.
+<br><br>
+There have been papers from the microbiome side that states that specific taxas associated with the patients determine the efficacy of anti-PD-1 therapy. [@sivan2015commensal; @routy2018gut]
+<br><br>
+However, there is not a great deal of overlap between specific bacterial taxa associated with response across these studies.
+<br><br>
+PD-L1 expression in the tumor has been noted as the biomarker to determine the efficacy of anti-PD-1 treatment in patients. This is very clear in the mechanistic perspective as tumors use PD-L1 to activate the PD-1 inhibitory receptor in tumor infiltrating lymphocytes. But this is not the only factor that determines the efficacy of the treatment. [@sun2020clinical]
+<br><br>
+EGFR or RAS mutation in the tumor has also been identified as potential predictors of good anti PD-1 inhibitor efficacy. [@sun2020clinical]
+<br><br>
+The fact that there are lots of different factors that affect the efficacy of PD-1 inhibitor in different patients explain the marked patient bias I see in my data.
+
+```{r, garbage}
+rm(qlf, model_design_pat, minimalSet, grch37, fit,  expressionMatrix, d, contrast.matrix,
+   cd8_exp_filtered_cpm_log2, cd8_id_conversion, cd8_id_conversion_final, conversion_stash, current_gpl,
+   Not.start.with.RP11, the.index,
+   duplicated.hugo, duplicated.hugo.matrix, checked.Gene.Symbols, dGEList.for.TMM, ensembl_gr37,
+   normalized_counts, normalized_counts_annot, qlf.B_vs_C, cd8_exp, cd8_exp_filtered)
+```
+
+
+##
+
+
+---
+nocite: |
+  @ritchie2015limma
+  @raudvere2019g
+  @gu2016complex
+...
+
+### References
