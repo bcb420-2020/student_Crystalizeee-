@@ -37,17 +37,10 @@ packages = c("BiocManager", "tidyverse", "knitr", "biomaRt",
 
 bioconductor_packages = c("edgeR", "GEOquery", "biomaRt", "gprofiler2", "ComplexHeatmap", "HGNChelper")
 
-packages <-setdiff(packages, rownames(installed.packages()))
-bioconductor_packages <- setdiff(bioconductor_packages, rownames(installed.packages()))
 
+install.packages(setdiff(packages, rownames(installed.packages())))
 
-for (package in packages){
-   install.packages(package)
-}
-
-for(package in bioconductor_packages){
-  BiocManager::install(package, update = FALSE)
-}
+BiocManager::install(setdiff(bioconductor_packages, rownames(installed.packages())), update = FALSE)
 
 if(!("annotables" %in% rownames(installed.packages()))){
   devtools::install_github("stephenturner/annotables")
@@ -1401,7 +1394,7 @@ To summarize, T-ORA with the differential genes between treatment cycles was not
 ##### Treatment Cycle 4 vs Cycle 3
 
 <br>
-First the whole gene list was divided into upregulated gene list and downregulated gene list.
+First the whole gene list was divided into upregulated gene list and downregulated gene list, thresholded at p value < 0.05 (without multiple hypothesis testing correction).
 ```{r}
 # First divide the list into upregulated and downregulated genes 
 
@@ -1576,7 +1569,7 @@ Chromosomal and microsatellite instability for colorectal cancer term was ignore
 ##### Treatment Cycle 3 vs Pre-Treatment
 
 <br>
-First the whole gene list was divided into upregulated gene list and downregulated gene list.
+First the whole gene list was divided into upregulated gene list and downregulated gene list, thresholded at p value < 0.05 (without multiple hypothesis testing correction).
 ```{r}
 # First divide the list into upregulated and downregulated genes 
 
@@ -1711,7 +1704,7 @@ Compared to the genesets from upregulated and downregulated gene lists, the gene
 Because the T-ORA of differential genes were not informative, I've decided to do another T-ORA between patient B and C in my samples.
 
 <br>
-First the whole gene list was divided into upregulated gene list and downregulated gene list.
+First the whole gene list was divided into upregulated gene list and downregulated gene list, thresholded at p value < 0.05 (without multiple hypothesis testing correction).
 
 
 ```{r}
@@ -1816,12 +1809,22 @@ result.down.B_C <- downreg_genelist_B_C_ensembl$result
 result.down.B_C <- result.down.B_C %>% dplyr::select(c(3:16)) %>% subset(select=c(7,9, 1:6,8, 14))
 nrow(result.down.B_C)
 
+PD.1.index <- grep(x = result.down.B_C$term_name, pattern = "PD-1")
+IL12.index <- grep(x = result.down.B_C$term_name, pattern = "interleukin-12", ignore.case = TRUE)
+costim.index <- grep(x = result.down.B_C$term_name, pattern = "costim", ignore.case = TRUE)
+interferon.gamma.index <- grep(x = result.down.B_C$term_name, pattern = "gamma", ignore.case = TRUE)
+TCR.index <- grep(x = result.down.B_C$term_name, pattern = "TCR", ignore.case = TRUE)
+
 # https://haozhu233.github.io/kableExtra/awesome_table_in_html.html
 kable(result.down.B_C) %>% 
   kable_styling() %>%
+  row_spec(row = c(interferon.gamma.index, PD.1.index, IL12.index, costim.index, TCR.index), 
+           bold = T, color = "white", background = "#D7261E") %>% 
   scroll_box(width = "800px", height = "500px")
+  
 ```
-
+*Terms (genesets) of particular interest were highlighted in red to ease which terms to look at when scrolling down*
+<br><br>
 At threshold of Benjamini Hochberg FDR corrected p value < 0.01, 534 downregulated genesets are returned from GO, KEGG, REAC, and WP. 
 <br><br>
 Finally, all the type I immunity related immune terms I was hoping to see popped up, Interferon-gamma is the key inflammatory cytokine that is activated during type I immunity activation. Type I interferon activation terms are also shown, indicating the greater activation of inflammation in patient C than patient B. T cell activation and antigen presentation, which are necessary to fight the tumor by presenting tumor-associated antigen also popped up. Response to IL-12, a type I immunity cytokine, also popped up. Similar terms appeared in Reactome, KEGG, and WP.
