@@ -13,7 +13,7 @@ Html file can be directly clicked to be downloaded, or click on link to view on 
 
 
 <br><br>
-[**Link to Assignment 3**](https://htmlpreview.github.io/?https://github.com/bcb420-2020/student_Crystalizeee-/blob/master/Assignment_2_TORA.html)<br><br>
+[**Link to Assignment 3**](https://htmlpreview.github.io/?https://github.com/bcb420-2020/student_Crystalizeee-/blob/master/A3_DongHan.html#enrichment_map_in_cytoscape)<br><br>
 
 *For assignment 3, please compile using <br>
 **A3_DongHan.Rmd** <br>
@@ -25,4 +25,5 @@ using the docker image pulled by the bash command below*
 **sudo docker pull risserlin/em_base_image:em_testing**
 <br><br>
 Warning: this will take a while to compile because I am running 2 GSEAs from the notebook.
-
+<br><br>
+Recommended to view the html file in full screen.
