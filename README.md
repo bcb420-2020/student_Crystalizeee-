@@ -23,6 +23,8 @@ with the png files in this repository <br>
 using the docker image pulled by the bash command below*
 
 **sudo docker pull risserlin/em_base_image:em_testing**
+<br>
+The files should be put in /home/bioc directory.
 <br><br>
 Warning: this will take a while to compile because I am running 2 GSEAs from the notebook.
 <br><br>
