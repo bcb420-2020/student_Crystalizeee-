@@ -14,6 +14,11 @@ Html file can be directly clicked to be downloaded, or click on link to view on 
 
 
 [**Link to Assignment 3**](https://htmlpreview.github.io/?https://github.com/bcb420-2020/student_Crystalizeee-/blob/master/Assignment_2_TORA.html)<br>
-*For assignment 3, please compile using the A3_DongHan.Rmd, library3.bib, and Images folder with the png files in this repository, using the docker image pulled by the bash command below*
+*For assignment 3, please compile using <br>
+**A3_DongHan.Rmd** <br>
+**library3.bib** <br>
+**Images** directory <br>
+with the png files in this repository <br>
+using the docker image pulled by the bash command below*
 
-sudo docker pull risserlin/em_base_image:em_testing
+**sudo docker pull risserlin/em_base_image:em_testing**
