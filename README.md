@@ -13,7 +13,8 @@ Html file can be directly clicked to be downloaded, or click on link to view on 
 
 
 
-[**Link to Assignment 3**](https://htmlpreview.github.io/?https://github.com/bcb420-2020/student_Crystalizeee-/blob/master/Assignment_2_TORA.html)<br>
+[**Link to Assignment 3**](https://htmlpreview.github.io/?https://github.com/bcb420-2020/student_Crystalizeee-/blob/master/Assignment_2_TORA.html)<br><br>
+
 *For assignment 3, please compile using <br>
 **A3_DongHan.Rmd** <br>
 **library3.bib** <br>
