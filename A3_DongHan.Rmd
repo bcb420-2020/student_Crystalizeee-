@@ -2145,6 +2145,9 @@ rm( model_design_pat, minimalSet, grch37, fit,  expressionMatrix, d, contrast.ma
 
 ---
 nocite: |
+  @kucera2016autoannotate
+  @morris2011clustermaker
+  @oesper2011wordcloud
   @ritchie2015limma
   @raudvere2019g
   @gu2016complex
