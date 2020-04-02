@@ -37,17 +37,23 @@ options(width = 1400)
 
 ```{r, message = FALSE, echo = TRUE, warning = FALSE, results = 'hide'}
 # Install packages that are not there
-packages = c("BiocManager", "tidyverse", "knitr", "rlang", 
+
+install.packages(setdiff("tidyverse", rownames(installed.packages())))
+library(tidyverse)
+BiocManager::install(setdiff("GEOquery", rownames(installed.packages())), update = FALSE, version = "3.10")
+library(GEOquery)       # Bioconductor
+
+packages = c("BiocManager", "knitr", "rlang", 
              "devtools", "reshape2", "kableExtra","circlize", "RCurl",
              "png", "grid", "htmltools", "ggplot2", "cowplot",
              "magick", "readxl", "GSA", "VennDiagram")
 
-bioconductor_packages = c("edgeR", "GEOquery", "biomaRt", "gprofiler2", "ComplexHeatmap", "HGNChelper")
+bioconductor_packages = c("edgeR", "biomaRt", "gprofiler2", "ComplexHeatmap", "HGNChelper")
+BiocManager::install(setdiff(bioconductor_packages, rownames(installed.packages())), update = FALSE, version = "3.10")
 
 
 install.packages(setdiff(packages, rownames(installed.packages())))
 
-BiocManager::install(setdiff(bioconductor_packages, rownames(installed.packages())), update = FALSE)
 
 if(!("annotables" %in% rownames(installed.packages()))){
   devtools::install_github("stephenturner/annotables")
@@ -55,8 +61,7 @@ if(!("annotables" %in% rownames(installed.packages()))){
 
 # Load in all the packages
 library(edgeR)          # Bioconductor
-library(GEOquery)       # Bioconductor
-library(tidyverse)
+
 library(knitr)
 library(biomaRt)        # Bioconductor
 library(annotables)     # this is from devtools
@@ -1389,7 +1394,9 @@ rx = gregexpr("(?<=<a href=\")(.*.GOBP_AllPathways_no_GO_iea.*.)(.gmt)(?=\">)",
   contents, perl = TRUE)
 gmt_file = unlist(regmatches(contents, rx))
 
-working_dir <- "/home/bioc"
+setwd("~")
+
+working_dir <- getwd()
 dest_gmt_file <- file.path(working_dir,paste(gmt_file, sep=""))
 
 download.file(
@@ -1461,7 +1468,9 @@ save.ranked.list.return.file.name <- function(fit, coeff, prefix = ""){
   } else{
     file.name <- paste(prefix , str_replace(string = coeff, pattern = " - ", replacemen = "_"), "Rank_NO_MHC.rnk", sep = "_")
   }
-  write.table(ranked.list, file = file.name, sep = "\t", row.names = F, quote = F)
+  setwd("~")
+  directory <- getwd()
+  write.table(ranked.list, file = file.path(directory, file.name), sep = "\t", row.names = F, quote = F)
   return(file.name)
 }
 
@@ -1483,13 +1492,14 @@ run.gsea <- function(rnk_file, analysis_name){
     run_gsea = TRUE
   }
   
-  working_dir = "/home/bioc"
+  setwd("~")
+  working_dir = getwd()
   rnk_file = rnk_file
   analysis_name = analysis_name
 
   if(run_gsea){
   
-  command <- paste("",gsea_jar,  "GSEAPreRanked -gmx", dest_gmt_file, "-rnk" ,file.path(working_dir,rnk_file), 
+  command <- paste( gsea_jar,  "GSEAPreRanked -gmx", dest_gmt_file, "-rnk" ,file.path(working_dir,rnk_file), 
                    "-collapse false -nperm 1000 -scoring_scheme weighted -rpt_label ",analysis_name,
                    "-plot_top_x 120 -rnd_seed 12345  -set_max 200 -set_min 15 -zip_report false -out" ,
                    working_dir, " > gsea_output.txt",sep=" ")
@@ -1541,7 +1551,7 @@ This is just to show an overview of the genesets that have reached statistical s
 <br>
 ```{r, echo=FALSE, warning = FALSE}
 set.gsea.pic.directory <- function(analysis_name){
-  
+  setwd("~")
   cur.dir.list <- dir()
   cur.dir <- getwd()
   cd <- cur.dir.list[grep(pattern = analysis_name, x = 
@@ -1564,7 +1574,7 @@ htmltools::includeHTML("index.html")
 # For bringing in notebook ran GSEA pictures
 get.4.characteristic.pics <- function(gsea.result, geneset.patterns){
   
-  setwd("/home/bioc")
+  setwd("~")
   set.gsea.pic.directory(gsea.result)
   pictures <- dir()
   indexes <- grepl(pattern = geneset.patterns, 
@@ -1584,7 +1594,7 @@ get.4.characteristic.pics <- function(gsea.result, geneset.patterns){
 # For bringing in Cytoscape Images
 # Must be in Images Directory
 get.Cytoscape.Images <- function(name.pattern){
-  setwd("/home/bioc/Images")
+  setwd("~/Images")
   pictures <- dir()
   indexes <- grepl(pattern = name.pattern, 
           x = pictures)
@@ -1603,7 +1613,7 @@ get.gsea.table <- function(gsea.result, geneset.patterns, pos.or.neg){
     pos.or.neg = "gsea_report_for_na_neg"
   }
   
-  setwd("/home/bioc")
+  setwd("~")
   set.gsea.pic.directory(gsea.result)
   directory <- dir()
   index <- grepl(pattern = pos.or.neg, 
@@ -1676,10 +1686,15 @@ kable(table) %>%  kable_styling()  %>% print() %>% invisible()
 #### Cycle 3 vs Pre-Treatment with Patient A & B without C{.tabset}
 
 ##### Rationale
+
+**Heatmap of Patient B vs Patient C Top Hits**
+
 ```{r}
 # Heatmap for Patient B vs Patient C 
 output.heatmap(compare.1 = "pt.B", compare.2 = "pt.C", gene.frame = PatientB.vs.PatientC)
 ```
+
+---
 
 So in my prior analysis of thresholded gene list obtained from differential gene expression analysis between Patient B and C, I have realized that expression levels of patient A and C cluster together whereas the expression levels of Patient B go toward the opposite of other two patients. 
 <br><br>
