@@ -19,13 +19,13 @@ Html file can be directly clicked to be downloaded, or click on link to view on 
 **A3_DongHan.Rmd** <br>
 **library3.bib** <br>
 **Images** directory <br>
-with the png files in this repository <br>
+in the same directory <br>
 using the docker image pulled by the bash command below*
 
-**sudo docker pull risserlin/em_base_image:em_testing**
-<br>
-The files should be put in /home/bioc directory.
+**sudo docker pull risserlin/em_base_image:latest**
 <br><br>
 Warning: this will take a while to compile because I am running 2 GSEAs from the notebook.
 <br><br>
-Recommended to view the html file in full screen.
+**Compile Command:**
+<br><br>
+sudo docker run --rm -it -v "$(pwd)":/home/rstudio/projects --user rstudio risserlin/em_base_image:latest /usr/local/bin/R -e "rmarkdown::render('/home/rstudio/projects/A3_DongHan.Rmd',output_file='/home/rstudio/projects/A3_DongHan.html')" > processing_output_filename
