@@ -13,7 +13,7 @@ Html file can be directly clicked to be downloaded, or click on link to view on 
 
 
 <br><br>
-[**Link to Assignment 3**](https://htmlpreview.github.io/?https://github.com/bcb420-2020/student_Crystalizeee-/blob/master/A3_DongHan.html#enrichment_map_in_cytoscape)<br><br>
+[**Link to Assignment 3**](https://htmlpreview.github.io/?https://github.com/bcb420-2020/student_Crystalizeee-/blob/master/A3_DongHan.html)<br><br>
 
 *For assignment 3, please compile using <br>
 **A3_DongHan.Rmd** <br>
